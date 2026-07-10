@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: bash -n bin/eic-mcp
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q shellcheck jq
+          shellcheck -x bin/eic-mcp
+
+      - name: Registry and help smoke tests
+        run: |
+          bin/eic-mcp list
+          bin/eic-mcp help | head -5
+          bin/eic-mcp bogus && exit 1 || [ $? -eq 2 ]
+          bin/eic-mcp logs && exit 1 || [ $? -eq 2 ]
+
+      - name: config output validation
+        run: |
+          bin/eic-mcp config opencode | jq -e '.mcp.uproot.url=="http://127.0.0.1:9101/mcp" and (.mcp|length==3)'
+          bin/eic-mcp config claude   | jq -e '(.mcpServers|length==3) and .mcpServers.xrootd.type=="http"'
+          bin/eic-mcp config copilot  | jq -e '.servers.uproot.type=="http"'
+          bin/eic-mcp config vscode   | jq -e '.servers.rucio.url=="http://127.0.0.1:9103/mcp"'
+          bin/eic-mcp config cursor   | jq -e '.mcpServers.uproot.url'
+          bin/eic-mcp config gemini   | jq -e '.mcpServers.uproot.httpUrl=="http://127.0.0.1:9101/mcp"'
+          bin/eic-mcp config codex    | python3 -c 'import sys,tomllib; d=tomllib.loads(sys.stdin.read()); assert d["mcp_servers"]["uproot"]["url"]=="http://127.0.0.1:9101/mcp"'
+          bin/eic-mcp config bogus && exit 1 || [ $? -eq 2 ]
+
+      - name: EIC_MCP_SERVERS respected
+        run: |
+          EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode | jq -e '.mcp|keys==["uproot","zenodo"]'
