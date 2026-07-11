@@ -20,8 +20,8 @@ over streamable HTTP by [`supergateway`](https://github.com/supercorp-ai/superga
 ## Usage
 
 ```bash
-git clone https://github.com/eic/eic-mcp
-export PATH=$PWD/eic-mcp/bin:$PATH
+git clone https://github.com/eic/eic-mcp ~/eic-mcp
+export PATH="$HOME/eic-mcp/bin:$PATH"    # add to your shell profile
 ```
 
 Then, inside eic-shell (or from the host — see below):
