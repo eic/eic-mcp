@@ -28,15 +28,23 @@ jobs:
 
       - name: config output validation
         run: |
-          bin/eic-mcp config opencode | jq -e '.mcp.uproot.url=="http://127.0.0.1:9101/mcp" and (.mcp|length==3)'
-          bin/eic-mcp config claude   | jq -e '(.mcpServers|length==3) and .mcpServers.xrootd.type=="http"'
-          bin/eic-mcp config copilot  | jq -e '.mcpServers.uproot.type=="http" and (.mcpServers.uproot.tools==["*"])'   # Copilot CLI, not VS Code
-          bin/eic-mcp config vscode   | jq -e '.servers.rucio.url=="http://127.0.0.1:9103/mcp" and .servers.uproot.type=="http"'
-          bin/eic-mcp config cursor   | jq -e '.mcpServers.uproot.url'
-          bin/eic-mcp config gemini   | jq -e '.mcpServers.uproot.httpUrl=="http://127.0.0.1:9101/mcp"'
-          bin/eic-mcp config codex    | python3 -c 'import sys,tomllib; d=tomllib.loads(sys.stdin.read()); assert d["mcp_servers"]["uproot"]["url"]=="http://127.0.0.1:9101/mcp"'
+          bin/eic-mcp config opencode - | jq -e '.mcp.uproot.url=="http://127.0.0.1:9101/mcp" and (.mcp|length==3)'
+          bin/eic-mcp config claude -   | jq -e '(.mcpServers|length==3) and .mcpServers.xrootd.type=="http"'
+          bin/eic-mcp config copilot -  | jq -e '.mcpServers.uproot.type=="http" and (.mcpServers.uproot.tools==["*"])'   # Copilot CLI, not VS Code
+          bin/eic-mcp config vscode -   | jq -e '.servers.rucio.url=="http://127.0.0.1:9103/mcp" and .servers.uproot.type=="http"'
+          bin/eic-mcp config cursor -   | jq -e '.mcpServers.uproot.url'
+          bin/eic-mcp config gemini -   | jq -e '.mcpServers.uproot.httpUrl=="http://127.0.0.1:9101/mcp"'
+          bin/eic-mcp config codex -    | python3 -c 'import sys,tomllib; d=tomllib.loads(sys.stdin.read()); assert d["mcp_servers"]["uproot"]["url"]=="http://127.0.0.1:9101/mcp"'
           bin/eic-mcp config bogus && exit 1 || [ $? -eq 2 ]
+
+      - name: config writes the client file (and never clobbers)
+        run: |
+          repo="$PWD"; d="$(mktemp -d)"; cd "$d"
+          "$repo/bin/eic-mcp" config opencode
+          jq -e '.mcp|length==3' opencode.jsonc
+          "$repo/bin/eic-mcp" config opencode | grep -q 'left unchanged'
+          "$repo/bin/eic-mcp" config vscode && jq -e '.servers|length==3' .vscode/mcp.json
 
       - name: EIC_MCP_SERVERS respected
         run: |
-          EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode | jq -e '.mcp|keys==["uproot","zenodo"]'
+          EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode - | jq -e '.mcp|keys==["uproot","zenodo"]'
