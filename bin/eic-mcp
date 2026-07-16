@@ -223,7 +223,7 @@ ensure_server() {  # make server $1 runnable; no-op once installed or bootstrapp
   bootstrap_server "$n"
 }
 prefetch_bridge() {  # make sure the stdio→HTTP bridge is runnable before wait_ready's clock starts
-  run_in_env "command -v supergateway >/dev/null 2>&1 || { $NPM_CACHE; npx -y supergateway --version >/dev/null 2>&1 || true; }"
+  run_in_env "supergateway --help 2>/dev/null | grep -q outputTransport || { $NPM_CACHE; npx -y $BRIDGE_PKG --version >/dev/null 2>&1 || true; }"
 }
 
 # ---- run recipe ---------------------------------------------------------------
@@ -236,13 +236,18 @@ prefetch_bridge() {  # make sure the stdio→HTTP bridge is runnable before wait
 # still stops everything (the loop lives in the same setsid process group).
 # Installed command and installed bridge are preferred; both fall back to the
 # bootstrapped checkout / npx. Resolution happens at exec time INSIDE the
-# container, so it never depends on the host PATH.
+# container, so it never depends on the host PATH. An image-shipped
+# supergateway is used only if its CLI understands --outputTransport
+# (a mismatched build crash-loops with "You must specify one of --stdio,
+# --sse, or --streamableHttp"); otherwise npx runs the pinned, known-good
+# version.
 BRIDGE_ARGS="--outputTransport streamableHttp --stateful"
+BRIDGE_PKG="supergateway@3.4.3"
 run_cmd() {  # echo the shell command that runs server $1 as an MCP-over-HTTP service
   local n=$1 port envfn env=""
   port=${SRV_PORT[$n]}; envfn=${SRV_ENV[$n]}
   [ -n "$envfn" ] && env="$($envfn) && "
-  echo "${env}$NPM_CACHE && STDIO=\"\$(command -v '${SRV_CMD[$n]}' || echo \"$(local_stdio "$n")\")\" && while :; do if command -v supergateway >/dev/null 2>&1; then supergateway --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; else npx -y supergateway --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; fi; echo \"[eic-mcp] bridge exited (\$?) — restarting in 1s\" >&2; sleep 1; done"
+  echo "${env}$NPM_CACHE && STDIO=\"\$(command -v '${SRV_CMD[$n]}' || echo \"$(local_stdio "$n")\")\" && while :; do if supergateway --help 2>/dev/null | grep -q outputTransport; then supergateway --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; else npx -y $BRIDGE_PKG --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; fi; echo \"[eic-mcp] bridge exited (\$?) — restarting in 1s\" >&2; sleep 1; done"
 }
 
 # ---- commands ---------------------------------------------------------------
