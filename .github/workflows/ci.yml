@@ -19,11 +19,19 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck jq
           shellcheck -x bin/eic-mcp
 
+      - name: service management only — no build or network verbs
+        run: |
+          ! grep -nE '\b(npx|git +clone|pip[0-9.]* +install|-m +venv|npm +(install|ci|run))\b' bin/eic-mcp
+          ! grep -nE '\b(bootstrap_server|cmd_setup|ensure_server|prefetch_bridge|local_stdio|local_built|NPM_CACHE|BRIDGE_PKG)\b' bin/eic-mcp
+
       - name: Registry and help smoke tests
         run: |
           bin/eic-mcp list
           bin/eic-mcp help | head -5
+          bin/eic-mcp help | grep -q 'Service management only'
+          ! bin/eic-mcp help | grep -q 'setup'
           bin/eic-mcp bogus && exit 1 || [ $? -eq 2 ]
+          bin/eic-mcp setup && exit 1 || [ $? -eq 2 ]
           bin/eic-mcp logs && exit 1 || [ $? -eq 2 ]
 
       - name: config output validation
@@ -48,3 +56,4 @@ jobs:
       - name: EIC_MCP_SERVERS respected
         run: |
           EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode - | jq -e '.mcp|keys==["uproot","zenodo"]'
+

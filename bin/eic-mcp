@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# eic-mcp — run the EIC MCP servers as local HTTP services for an LLM client
-#           (opencode, Copilot, Cursor, …). Hybrid: a server that is already
-#           installed in the image (/opt/local/bin) is used as-is; one that
-#           is not is bootstrapped automatically on first `up` (a one-time
-#           clone + build). Same commands either way.
+# eic-mcp — run the EIC MCP servers installed in eic-shell as local HTTP
+#           services for an LLM client (opencode, Claude Code, Copilot, …).
+#           Service management only: it serves what the image ships
+#           (/opt/local/bin); it never clones, builds, or fetches anything.
+#           A missing server means the image is too old — update eic-shell.
 #
-# Run it INSIDE eic-shell (Python, Node, git already present), or from the
-# host: it finds your eic_xl .sif automatically (or set EIC_MCP_SIF).
+# Run it INSIDE eic-shell, or from the host: it finds your eic_xl .sif
+# automatically (or set EIC_MCP_SIF).
 #
 #   eic-mcp list              # show the server registry
 #   eic-mcp up                # start them (http://127.0.0.1:910x/mcp)
@@ -15,7 +15,6 @@
 #   eic-mcp config CLIENT     # write CLIENT's MCP config file ('config CLIENT -' prints it)
 #   eic-mcp logs NAME         # tail a server log
 #   eic-mcp down | restart
-#   eic-mcp setup             # optional pre-build ('up' does this automatically)
 #
 # Pick which servers to run (default: uproot xrootd rucio):
 #   EIC_MCP_SERVERS="uproot xrootd rucio zenodo" eic-mcp up
@@ -40,20 +39,18 @@ if [ -z "${EIC_MCP_STATE:-}" ] && [ "$HOME" = "/root" ] && [ -n "${EIC_SHELL_PRE
   EIC_MCP_STATE="$(dirname "$EIC_SHELL_PREFIX")/.eic-mcp"
 fi
 EIC_MCP_STATE="${EIC_MCP_STATE:-$HOME/.eic-mcp}"
-EIC_MCP_DIR="${EIC_MCP_DIR:-$EIC_MCP_STATE/servers}"   # bootstrap checkouts
 RUN_DIR="$EIC_MCP_STATE/run"; LOG_DIR="$EIC_MCP_STATE/logs"
 BIND_HOST="${EIC_MCP_HOST:-127.0.0.1}"
 EIC_MCP_SIF="${EIC_MCP_SIF:-}"
 RUCIO_CFG="${RUCIO_CFG:-/opt/rucio/etc/rucio.cfg}"
 CONF_DIR="${EIC_MCP_CONF_DIR:-$HOME/.config/eic-mcp/servers.d}"
-NPM_CACHE="export npm_config_cache='$EIC_MCP_STATE/npm'"   # persists with the state
 
 # ---- server registry --------------------------------------------------------
 # register NAME PORT COMMAND REPO KIND [ENV_HOOK]
-#   COMMAND  = the installed stdio MCP server command (preferred when on PATH,
+#   COMMAND  = the installed stdio MCP server command (on PATH in the image,
 #              i.e. /opt/local/bin/<cmd>). Exposed over streamable HTTP via supergateway.
-#   REPO     = upstream git URL used to bootstrap when COMMAND is not installed
-#   KIND     = py | node  (bootstrap build recipe; runtime is always stdio→streamable HTTP)
+#   REPO     = upstream project URL — informational only (shown by `list`)
+#   KIND     = py | node — informational only (kept for drop-in compatibility)
 #   ENV_HOOK = a function name that echoes `export …` lines (auth/config)
 declare -A SRV_PORT SRV_CMD SRV_REPO SRV_KIND SRV_ENV
 SRV_ORDER=()
@@ -100,7 +97,6 @@ register zenodo 9104 zenodo-mcp-server https://github.com/eic/zenodo-mcp-server 
 if [ -d "$CONF_DIR" ]; then for f in "$CONF_DIR"/*.conf; do [ -e "$f" ] && source "$f"; done; fi
 
 enabled_servers() { echo "${EIC_MCP_SERVERS:-uproot xrootd rucio}"; }
-srv_dir() { echo "$EIC_MCP_DIR/$(basename "${SRV_REPO[$1]}" .git)"; }
 
 # ---- run inside the EIC software stack --------------------------------------
 # apptainer markers, or /etc/eic-env.sh for the Docker eic_xl image (macOS)
@@ -189,41 +185,27 @@ resolved_servers() {
   done
 }
 
-# ---- hybrid server resolution: installed → local build → bootstrap ----------
-local_stdio() {  # the bootstrapped stdio command for server $1
-  local n=$1 dir; dir="$(srv_dir "$n")"
-  case "${SRV_KIND[$n]}" in
-    py)   echo "$dir/.venv-eic/bin/${SRV_CMD[$n]}" ;;
-    node) echo "node $dir/build/src/index.js" ;;
-  esac
-}
-local_built() {  # host-visible check ($EIC_MCP_DIR lives under $EIC_MCP_STATE, visible on both sides)
-  local n=$1 dir; dir="$(srv_dir "$n")"
-  case "${SRV_KIND[$n]}" in
-    py)   [ -x "$dir/.venv-eic/bin/${SRV_CMD[$n]}" ] ;;
-    node) [ -e "$dir/build/src/index.js" ] ;;
-  esac
-}
-cmd_installed() {  # probe inside the container env (PATH incl. /opt/local/bin)
-  run_in_env "command -v '${SRV_CMD[$1]}' >/dev/null 2>&1"
-}
-bootstrap_server() {  # one-time clone + build of upstream main
-  local n=$1 dir; dir="$(srv_dir "$n")"; mkdir -p "$EIC_MCP_DIR"
-  [ -d "$dir/.git" ] || git clone --depth 1 "${SRV_REPO[$n]}" "$dir"
-  case "${SRV_KIND[$n]}" in
-    py)   run_in_env "cd '$dir' && { [ -d .venv-eic ] || python3 -m venv --system-site-packages .venv-eic; } && ./.venv-eic/bin/pip -q install ." ;;
-    node) run_in_env "cd '$dir' && $NPM_CACHE && { [ -d node_modules ] || npm install; } && npm run build" ;;
-  esac
-}
-ensure_server() {  # make server $1 runnable; no-op once installed or bootstrapped
+# ---- installed-only resolution ------------------------------------------------
+# eic-mcp serves what the image ships; it never builds or fetches a server.
+require_server() {  # 0 iff server $1's console command resolves inside the env
   local n=$1
-  local_built "$n" && return 0          # bootstrapped on an earlier run (cheap check first)
-  cmd_installed "$n" && return 0        # shipped in this eic_xl image → nothing to do
-  echo "==> $n: not shipped in this eic_xl image yet — bootstrapping once (clone + build, may take a few minutes)"
-  bootstrap_server "$n"
+  run_in_env "command -v '${SRV_CMD[$n]}' >/dev/null 2>&1" && return 0
+  {
+    echo "  ✗ $n: '${SRV_CMD[$n]}' is not installed in this image."
+    echo "      Update eic-shell to an image that ships the EIC MCP servers"
+    echo "      (spack package: the '$n' server), then retry 'eic-mcp up'."
+  } >&2
+  return 1
 }
-prefetch_bridge() {  # make sure the stdio→HTTP bridge is runnable before wait_ready's clock starts
-  run_in_env "supergateway --help 2>/dev/null | grep -q outputTransport || { $NPM_CACHE; npx -y $BRIDGE_PKG --version >/dev/null 2>&1 || true; }"
+require_bridge() {  # the stdio→HTTP bridge must be shipped in the image too
+  run_in_env "command -v supergateway >/dev/null 2>&1 \
+              && supergateway --help 2>/dev/null | grep -q outputTransport" && return 0
+  {
+    echo "  ✗ supergateway (the stdio→HTTP bridge) is not installed in this image"
+    echo "      (or is too old to know --outputTransport). Update eic-shell to an"
+    echo "      image that ships it (spack package: supergateway)."
+  } >&2
+  return 1
 }
 
 # ---- run recipe ---------------------------------------------------------------
@@ -234,43 +216,25 @@ prefetch_bridge() {  # make sure the stdio→HTTP bridge is runnable before wait
 # disconnects mid tool call (the SDK throws on sending the late reply), and the
 # loop turns that into a 1-second blip instead of a dead server. `eic-mcp down`
 # still stops everything (the loop lives in the same setsid process group).
-# Installed command and installed bridge are preferred; both fall back to the
-# bootstrapped checkout / npx. Resolution happens at exec time INSIDE the
-# container, so it never depends on the host PATH. An image-shipped
-# supergateway is used only if its CLI understands --outputTransport
-# (a mismatched build crash-loops with "You must specify one of --stdio,
-# --sse, or --streamableHttp"); otherwise npx runs the pinned, known-good
-# version.
+# Command and bridge resolve at exec time INSIDE the container, so nothing
+# depends on the host PATH. supergateway has no bind-address flag: it listens
+# on all interfaces; EIC_MCP_HOST only picks the address written into configs.
 BRIDGE_ARGS="--outputTransport streamableHttp --stateful"
-BRIDGE_PKG="supergateway@3.4.3"
 run_cmd() {  # echo the shell command that runs server $1 as an MCP-over-HTTP service
   local n=$1 port envfn env=""
   port=${SRV_PORT[$n]}; envfn=${SRV_ENV[$n]}
   [ -n "$envfn" ] && env="$($envfn) && "
-  echo "${env}$NPM_CACHE && STDIO=\"\$(command -v '${SRV_CMD[$n]}' || echo \"$(local_stdio "$n")\")\" && while :; do if supergateway --help 2>/dev/null | grep -q outputTransport; then supergateway --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; else npx -y $BRIDGE_PKG --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; fi; echo \"[eic-mcp] bridge exited (\$?) — restarting in 1s\" >&2; sleep 1; done"
+  echo "${env}STDIO=\"\$(command -v '${SRV_CMD[$n]}')\" && while :; do supergateway --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; echo \"[eic-mcp] bridge exited (\$?) — restarting in 1s\" >&2; sleep 1; done"
 }
 
 # ---- commands ---------------------------------------------------------------
 cmd_list() {
-  printf "%-8s %-6s %-20s %-8s %s\n" NAME PORT COMMAND ENABLED REPO
+  printf "%-8s %-6s %-20s %-6s %-8s %s\n" NAME PORT COMMAND KIND ENABLED REPO
   local en; en=" $(enabled_servers) "
   for n in "${SRV_ORDER[@]}"; do
     case "$en" in *" $n "*) e=yes;; *) e=no;; esac
-    printf "%-8s %-6s %-20s %-8s %s\n" "$n" "${SRV_PORT[$n]}" "${SRV_CMD[$n]}" "$e" "${SRV_REPO[$n]}"
+    printf "%-8s %-6s %-20s %-6s %-8s %s\n" "$n" "${SRV_PORT[$n]}" "${SRV_CMD[$n]}" "${SRV_KIND[$n]}" "$e" "${SRV_REPO[$n]}"
   done
-}
-# `setup` pre-builds everything so the first `up` is instant. Entirely optional:
-# `up` runs the same steps automatically.
-cmd_setup() {
-  mkdir -p "$RUN_DIR" "$LOG_DIR"
-  local n rc=0
-  for n in $(resolved_servers); do
-    if ensure_server "$n"; then echo "==> $n: ready"
-    else echo "  ✗ $n: bootstrap failed" >&2; rc=1; fi
-  done
-  prefetch_bridge
-  echo; echo "Setup complete (optional — 'eic-mcp up' does all of this automatically)."
-  return $rc
 }
 cmd_up() {
   mkdir -p "$RUN_DIR" "$LOG_DIR"
@@ -286,10 +250,10 @@ cmd_up() {
     if port_open "${SRV_PORT[$n]}"; then
       echo "  ⚠ $n: port ${SRV_PORT[$n]} already in use by another process — not starting" >&2; rc=1; continue
     fi
-    if ! ensure_server "$n"; then echo "  ✗ $n: bootstrap failed — not starting" >&2; rc=1; continue; fi
+    if ! require_server "$n"; then rc=1; continue; fi
     launched+=("$n")
   done
-  [ ${#launched[@]} -gt 0 ] && prefetch_bridge
+  if [ ${#launched[@]} -gt 0 ] && ! require_bridge; then return 1; fi
   for n in ${launched[@]+"${launched[@]}"}; do
     run_in_env_bg "$(run_cmd "$n")" "$RUN_DIR/$n.pid" "$LOG_DIR/$n.log"
   done
@@ -446,13 +410,12 @@ cmd_config() {  # write CLIENT's config in place; `config CLIENT -` prints to st
 
 case "${1:-}" in
   list)    cmd_list ;;
-  setup)   cmd_setup ;;
   up)      cmd_up ;;
   down)    cmd_down ;;
   restart) cmd_down; sleep 1; cmd_up ;;
   status)  cmd_status ;;
   logs)    shift; cmd_logs "${1:-}" ;;
   config)  shift; cmd_config "${1:-opencode}" "${2:-}" ;;
-  ""|-h|--help|help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "Unknown command: $1" >&2; echo "Try: eic-mcp help" >&2; exit 2 ;;
 esac

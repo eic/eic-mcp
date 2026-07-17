@@ -9,13 +9,12 @@ servers inside [eic-shell](https://github.com/eic/eic-shell).
 opencode, GitHub Copilot, Cursor, Claude Code, Gemini CLI, Codex — can drive
 EIC tools.
 
-It is **hybrid**: a server already installed in the eic_xl image
-(`/opt/local/bin`) is used as-is; one that is not is bootstrapped automatically
-on the first `up` (a one-time clone + build into `~/.eic-mcp/servers`). The
-same two commands work either way, and the bootstrap disappears by itself once
-the Spack-packaged servers ship in the image. Each stdio server is exposed
-over streamable HTTP by [`supergateway`](https://github.com/supercorp-ai/supergateway)
-(stateful mode, under a restart supervisor).
+It does **service management only**: it serves the servers the eic_xl image
+ships (`/opt/local/bin`, installed as Spack packages) and never clones, builds,
+or fetches anything itself. A missing server means the image is too old —
+update eic-shell. Each stdio server is exposed over streamable HTTP by
+[`supergateway`](https://github.com/supercorp-ai/supergateway) (stateful mode,
+under a restart supervisor).
 
 ## Usage
 
@@ -32,7 +31,6 @@ eic-mcp status             # which are listening
 eic-mcp config opencode    # print client config → redirect into your client
 eic-mcp logs uproot        # tail a server log
 eic-mcp down               # stop them
-eic-mcp setup              # optional pre-build ('up' does this automatically)
 ```
 
 Connect any MCP client:
@@ -64,10 +62,10 @@ in `~/.config/eic-mcp/servers.d/<name>.conf` that calls `register`:
 register indico 9105 indico-mcp-server https://github.com/cohm/indico-mcp node
 ```
 
-`COMMAND` is the installed stdio server (preferred when on `PATH`); `REPO` is
-the upstream git URL used to bootstrap when it is not installed; `KIND`
-(`py` | `node`) selects the bootstrap build recipe; `ENV_HOOK` is an optional
-shell function that echoes `export …` lines for auth/config.
+`COMMAND` is the installed stdio server command (it must be on `PATH` inside
+the image); `REPO` and `KIND` (`py` | `node`) are informational, shown by
+`list`; `ENV_HOOK` is an optional shell function that echoes `export …` lines
+for auth/config.
 
 ## From the host
 
