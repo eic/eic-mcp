@@ -57,3 +57,10 @@ jobs:
         run: |
           EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode - | jq -e '.mcp|keys==["uproot","zenodo"]'
 
+      - name: EIC_MCP_HOST=0.0.0.0 advertises a routable URL and warns
+        run: |
+          EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=10.1.2.3 bin/eic-mcp config gemini - 2>/dev/null \
+            | jq -e '.mcpServers.uproot.httpUrl=="http://10.1.2.3:9101/mcp"'
+          EIC_MCP_HOST=0.0.0.0 bin/eic-mcp list 2>&1 >/dev/null | grep -qi 'no authentication'
+          # default stays local
+          bin/eic-mcp config gemini - | jq -e '.mcpServers.uproot.httpUrl=="http://127.0.0.1:9101/mcp"'

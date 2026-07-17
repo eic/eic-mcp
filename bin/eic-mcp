@@ -19,6 +19,9 @@
 # Pick which servers to run (default: uproot xrootd rucio):
 #   EIC_MCP_SERVERS="uproot xrootd rucio zenodo" eic-mcp up
 #
+# Serve LLM clients on other machines (the servers have NO authentication):
+#   EIC_MCP_HOST=0.0.0.0 eic-mcp up   # configs advertise EIC_MCP_ADVERTISE_HOST
+#
 # Add your own / future EIC servers WITHOUT editing this file — drop a file in
 #   ~/.config/eic-mcp/servers.d/<name>.conf
 # that calls `register …` (see the built-ins below for the signature).
@@ -44,6 +47,24 @@ BIND_HOST="${EIC_MCP_HOST:-127.0.0.1}"
 EIC_MCP_SIF="${EIC_MCP_SIF:-}"
 RUCIO_CFG="${RUCIO_CFG:-/opt/rucio/etc/rucio.cfg}"
 CONF_DIR="${EIC_MCP_CONF_DIR:-$HOME/.config/eic-mcp/servers.d}"
+
+# The host written into client configs and status URLs. The bridge itself
+# always listens on all interfaces (supergateway has no bind flag), so
+# EIC_MCP_HOST only controls what is *advertised*: the default 127.0.0.1
+# keeps configs local; 0.0.0.0 opts into remote clients — since 0.0.0.0 is
+# not a connectable address, configs then advertise EIC_MCP_ADVERTISE_HOST
+# (default: this host's first address).
+if [ "$BIND_HOST" = "0.0.0.0" ]; then
+  URL_HOST="${EIC_MCP_ADVERTISE_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}' || true)}"
+  URL_HOST="${URL_HOST:-127.0.0.1}"
+  {
+    echo "⚠ EIC_MCP_HOST=0.0.0.0 — the MCP servers have NO authentication and are"
+    echo "  reachable by anything that can route to this host's 910x ports. Use only"
+    echo "  on a trusted network (apptainer shares the host network namespace)."
+  } >&2
+else
+  URL_HOST="$BIND_HOST"
+fi
 
 # ---- server registry --------------------------------------------------------
 # register NAME PORT COMMAND REPO KIND [ENV_HOOK]
@@ -162,12 +183,14 @@ run_in_env_bg() {  # cmd pidfile logfile  — setsid → own process group for r
   fi
 }
 # TCP connect test (SSE streams never close, so a curl GET would hang — not a failure).
-port_open() { timeout 2 bash -c "exec 3<>/dev/tcp/$BIND_HOST/$1" 2>/dev/null; }
+# Always probe loopback: the bridge listens on all interfaces, and 0.0.0.0 is
+# not a connectable address.
+port_open() { timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 wait_ready() {  # name port timeout
   local name="$1" port="$2" timeout="${3:-60}" i pid
   pid="$(cat "$RUN_DIR/$name.pid" 2>/dev/null || true)"
   for ((i = 1; i <= timeout; i++)); do
-    port_open "$port" && { echo "  ✓ $name ready on http://$BIND_HOST:$port/mcp"; return 0; }
+    port_open "$port" && { echo "  ✓ $name ready on http://$URL_HOST:$port/mcp"; return 0; }
     # fail fast if the process we launched already died (e.g. bind failed)
     if [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null; then
       echo "  ✗ $name exited before binding $port (see: eic-mcp logs $name)" >&2; return 1
@@ -289,7 +312,7 @@ cmd_status() {
   printf "%-8s %-30s %s\n" SERVER URL STATE
   local n; for n in $(resolved_servers); do
     port_open "${SRV_PORT[$n]}" && st=UP || st=down
-    printf "%-8s %-30s %s\n" "$n" "http://$BIND_HOST:${SRV_PORT[$n]}/mcp" "$st"
+    printf "%-8s %-30s %s\n" "$n" "http://$URL_HOST:${SRV_PORT[$n]}/mcp" "$st"
   done
   echo "state: $EIC_MCP_STATE"
 }
@@ -314,7 +337,7 @@ print_config() {
       echo '  "$schema": "https://opencode.ai/config.json",'
       echo '  "mcp": {'
       for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "type": "remote", "url": "%s", "enabled": true }' "$n" "$url"
       done
@@ -323,7 +346,7 @@ print_config() {
     claude)   # Claude Code / Claude Desktop .mcp.json (project or ~/.claude.json)
       echo '{'; echo '  "mcpServers": {'
       for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "type": "http", "url": "%s" }' "$n" "$url"
       done
@@ -332,7 +355,7 @@ print_config() {
     copilot)  # GitHub Copilot CLI ~/.copilot/mcp-config.json (preinstalled in eic-shell)
       echo '{'; echo '  "mcpServers": {'
       for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "type": "http", "url": "%s", "tools": ["*"] }' "$n" "$url"
       done
@@ -341,7 +364,7 @@ print_config() {
     vscode)   # VS Code (Copilot Chat, Agent mode) .vscode/mcp.json
       echo '{'; echo '  "servers": {'
       for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "type": "http", "url": "%s" }' "$n" "$url"
       done
@@ -350,7 +373,7 @@ print_config() {
     cursor)   # Cursor .cursor/mcp.json (transport inferred from the URL)
       echo '{'; echo '  "mcpServers": {'
       for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "url": "%s" }' "$n" "$url"
       done
@@ -359,7 +382,7 @@ print_config() {
     gemini)   # Gemini CLI .gemini/settings.json (httpUrl = streamable HTTP; url would mean SSE)
       echo '{'; echo '  "mcpServers": {'
       for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "httpUrl": "%s" }' "$n" "$url"
       done
@@ -368,7 +391,7 @@ print_config() {
     codex)    # Codex CLI ~/.codex/config.toml (TOML — append with >>)
       for n in $(resolved_servers); do
         echo "[mcp_servers.$n]"
-        echo "url = \"http://$BIND_HOST:${SRV_PORT[$n]}/mcp\""
+        echo "url = \"http://$URL_HOST:${SRV_PORT[$n]}/mcp\""
       done
       ;;
     *) echo "unknown client '$client' (use: opencode | claude | copilot | vscode | cursor | gemini | codex)" >&2; exit 2 ;;
@@ -390,7 +413,7 @@ write_client_config() {
   local client="$1" dest; dest="$(config_dest "$client")" || return 2
   case "$dest" in */*) mkdir -p "${dest%/*}";; esac
   if [ "$client" = codex ]; then   # TOML: append-only
-    if [ -f "$dest" ] && grep -q "http://$BIND_HOST:" "$dest"; then
+    if [ -f "$dest" ] && grep -q "http://$URL_HOST:" "$dest"; then
       echo "  • $dest already lists the servers — left unchanged"
     else
       print_config codex >>"$dest"; echo "  ✓ appended the server entries to $dest"
@@ -416,6 +439,6 @@ case "${1:-}" in
   status)  cmd_status ;;
   logs)    shift; cmd_logs "${1:-}" ;;
   config)  shift; cmd_config "${1:-opencode}" "${2:-}" ;;
-  ""|-h|--help|help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "Unknown command: $1" >&2; echo "Try: eic-mcp help" >&2; exit 2 ;;
 esac

@@ -82,6 +82,22 @@ Docker with no published ports — either run your client inside eic-shell, or
 add `-p 127.0.0.1:9101-9104:9101-9104` to the `docker run` line of your
 `eic-shell` script.
 
+## Serving clients on other machines
+
+The bridge listens on all interfaces, but the URLs written by `config` default
+to `127.0.0.1`. To point clients on **other** machines at these servers:
+
+```bash
+EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=$(hostname -f) eic-mcp up
+EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=$(hostname -f) eic-mcp config opencode
+```
+
+`EIC_MCP_ADVERTISE_HOST` (default: the host's first address) is the address
+written into configs and status URLs.
+
+> ⚠ The MCP servers have **no authentication**. Only do this on a trusted
+> network, or restrict the 9101–9104 ports with a firewall.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
