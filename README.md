@@ -9,13 +9,12 @@ servers inside [eic-shell](https://github.com/eic/eic-shell).
 opencode, GitHub Copilot, Cursor, Claude Code, Gemini CLI, Codex — can drive
 EIC tools.
 
-It is **hybrid**: a server already installed in the eic_xl image
-(`/opt/local/bin`) is used as-is; one that is not is bootstrapped automatically
-on the first `up` (a one-time clone + build into `~/.eic-mcp/servers`). The
-same two commands work either way, and the bootstrap disappears by itself once
-the Spack-packaged servers ship in the image. Each stdio server is exposed
-over streamable HTTP by [`supergateway`](https://github.com/supercorp-ai/supergateway)
-(stateful mode, under a restart supervisor).
+It does **service management only**: it serves the servers the eic_xl image
+ships (`/opt/local/bin`, installed as Spack packages) and never clones, builds,
+or fetches anything itself. A missing server means the image is too old —
+update eic-shell. Each stdio server is exposed over streamable HTTP by
+[`supergateway`](https://github.com/supercorp-ai/supergateway) (stateful mode,
+under a restart supervisor).
 
 ## Usage
 
@@ -32,7 +31,6 @@ eic-mcp status             # which are listening
 eic-mcp config opencode    # print client config → redirect into your client
 eic-mcp logs uproot        # tail a server log
 eic-mcp down               # stop them
-eic-mcp setup              # optional pre-build ('up' does this automatically)
 ```
 
 Connect any MCP client:
@@ -64,10 +62,10 @@ in `~/.config/eic-mcp/servers.d/<name>.conf` that calls `register`:
 register indico 9105 indico-mcp-server https://github.com/cohm/indico-mcp node
 ```
 
-`COMMAND` is the installed stdio server (preferred when on `PATH`); `REPO` is
-the upstream git URL used to bootstrap when it is not installed; `KIND`
-(`py` | `node`) selects the bootstrap build recipe; `ENV_HOOK` is an optional
-shell function that echoes `export …` lines for auth/config.
+`COMMAND` is the installed stdio server command (it must be on `PATH` inside
+the image); `REPO` and `KIND` (`py` | `node`) are informational, shown by
+`list`; `ENV_HOOK` is an optional shell function that echoes `export …` lines
+for auth/config.
 
 ## From the host
 
@@ -83,6 +81,22 @@ from inside and outside the container alike. On macOS, eic-shell runs via
 Docker with no published ports — either run your client inside eic-shell, or
 add `-p 127.0.0.1:9101-9104:9101-9104` to the `docker run` line of your
 `eic-shell` script.
+
+## Serving clients on other machines
+
+The bridge listens on all interfaces, but the URLs written by `config` default
+to `127.0.0.1`. To point clients on **other** machines at these servers:
+
+```bash
+EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=$(hostname -f) eic-mcp up
+EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=$(hostname -f) eic-mcp config opencode
+```
+
+`EIC_MCP_ADVERTISE_HOST` (default: the host's first address) is the address
+written into configs and status URLs.
+
+> ⚠ The MCP servers have **no authentication**. Only do this on a trusted
+> network, or restrict the 9101–9104 ports with a firewall.
 
 ## License
 
