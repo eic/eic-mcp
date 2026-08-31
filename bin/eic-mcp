@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 #
-# eic-mcp — run the EIC MCP servers as local HTTP services for an LLM client
-#           (opencode, Copilot, Cursor, …). Hybrid: a server that is already
-#           installed in the image (/opt/local/bin) is used as-is; one that
-#           is not is bootstrapped automatically on first `up` (a one-time
-#           clone + build). Same commands either way.
+# eic-mcp — run the EIC MCP servers installed in eic-shell as local HTTP
+#           services for an LLM client (opencode, Claude Code, Copilot, …).
+#           Service management only: it starts what the image ships
+#           (/opt/local/bin) in native streamable-HTTP mode; it never
+#           clones, builds, bridges, or fetches anything. A missing server
+#           means the image is too old — upgrade eic-shell.
 #
-# Run it INSIDE eic-shell (Python, Node, git already present), or from the
-# host: it finds your eic_xl .sif automatically (or set EIC_MCP_SIF).
+# Run it INSIDE eic-shell, or from the host: it finds your eic_xl .sif
+# automatically (or set EIC_MCP_SIF).
 #
 #   eic-mcp list              # show the server registry
 #   eic-mcp up                # start them (http://127.0.0.1:910x/mcp)
@@ -15,10 +16,12 @@
 #   eic-mcp config CLIENT     # write CLIENT's MCP config file ('config CLIENT -' prints it)
 #   eic-mcp logs NAME         # tail a server log
 #   eic-mcp down | restart
-#   eic-mcp setup             # optional pre-build ('up' does this automatically)
 #
 # Pick which servers to run (default: uproot xrootd rucio):
-#   EIC_MCP_SERVERS="uproot xrootd rucio zenodo" eic-mcp up
+#   EIC_MCP_SERVERS="uproot xrootd rucio" eic-mcp up
+#
+# Serve LLM clients on other machines (the servers have NO authentication):
+#   EIC_MCP_HOST=0.0.0.0 eic-mcp up   # configs then advertise EIC_MCP_ADVERTISE_HOST
 #
 # Add your own / future EIC servers WITHOUT editing this file — drop a file in
 #   ~/.config/eic-mcp/servers.d/<name>.conf
@@ -40,27 +43,37 @@ if [ -z "${EIC_MCP_STATE:-}" ] && [ "$HOME" = "/root" ] && [ -n "${EIC_SHELL_PRE
   EIC_MCP_STATE="$(dirname "$EIC_SHELL_PREFIX")/.eic-mcp"
 fi
 EIC_MCP_STATE="${EIC_MCP_STATE:-$HOME/.eic-mcp}"
-EIC_MCP_DIR="${EIC_MCP_DIR:-$EIC_MCP_STATE/servers}"   # bootstrap checkouts
 RUN_DIR="$EIC_MCP_STATE/run"; LOG_DIR="$EIC_MCP_STATE/logs"
 BIND_HOST="${EIC_MCP_HOST:-127.0.0.1}"
 EIC_MCP_SIF="${EIC_MCP_SIF:-}"
 RUCIO_CFG="${RUCIO_CFG:-/opt/rucio/etc/rucio.cfg}"
 CONF_DIR="${EIC_MCP_CONF_DIR:-$HOME/.config/eic-mcp/servers.d}"
-NPM_CACHE="export npm_config_cache='$EIC_MCP_STATE/npm'"   # persists with the state
+
+# BIND_HOST is the real bind address; URL_HOST goes into client configs —
+# the same, except 0.0.0.0 advertises EIC_MCP_ADVERTISE_HOST instead.
+if [ "$BIND_HOST" = "0.0.0.0" ]; then
+  URL_HOST="${EIC_MCP_ADVERTISE_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}' || true)}"
+  URL_HOST="${URL_HOST:-127.0.0.1}"
+  {
+    echo "⚠ EIC_MCP_HOST=0.0.0.0 — the MCP servers have NO authentication and are"
+    echo "  reachable by anything that can route to this host's 910x ports. Use only"
+    echo "  on a trusted network (apptainer shares the host network namespace)."
+  } >&2
+else
+  URL_HOST="$BIND_HOST"
+fi
 
 # ---- server registry --------------------------------------------------------
-# register NAME PORT COMMAND REPO KIND [ENV_HOOK]
-#   COMMAND  = the installed stdio MCP server command (preferred when on PATH,
-#              i.e. /opt/local/bin/<cmd>). Exposed over streamable HTTP via supergateway.
-#   REPO     = upstream git URL used to bootstrap when COMMAND is not installed
-#   KIND     = py | node  (bootstrap build recipe; runtime is always stdio→streamable HTTP)
-#   ENV_HOOK = a function name that echoes `export …` lines (auth/config)
-declare -A SRV_PORT SRV_CMD SRV_REPO SRV_KIND SRV_ENV
+# register NAME PORT COMMAND REPO HTTP_TEMPLATE [ENV_HOOK]
+#   HTTP_TEMPLATE runs the installed COMMAND as a streamable-HTTP service
+#   (%c → command, %h → bind host, %p → port); EMPTY = stdio-only, `up` skips it.
+#   ENV_HOOK is a function that echoes `export …` lines (auth/config).
+declare -A SRV_PORT SRV_CMD SRV_REPO SRV_HTTP SRV_ENV
 SRV_ORDER=()
 register() {
   local n=$1
   SRV_PORT[$n]=$2; SRV_CMD[$n]=$3; SRV_REPO[$n]=$4
-  SRV_KIND[$n]=$5; SRV_ENV[$n]=${6:-}
+  SRV_HTTP[$n]=$5; SRV_ENV[$n]=${6:-}
   case " ${SRV_ORDER[*]:-} " in *" $n "*) :;; *) SRV_ORDER+=("$n");; esac
 }
 
@@ -89,18 +102,23 @@ xrootd_env() { echo "export XROOTD_SERVER='${XROOTD_SERVER:-root://epicxrd1.sdcc
 zenodo_env() { [ -n "${ZENODO_API_KEY:-}" ] && echo "export ZENODO_API_KEY='$ZENODO_API_KEY'" || echo ":"; }
 
 # --- built-in EIC servers ---
-register uproot 9101 uproot-mcp-server https://github.com/eic/uproot-mcp-server    py
-register xrootd 9102 xrootd-mcp-server https://github.com/eic/xrootd-mcp-server    node xrootd_env
-register rucio  9103 rucio-eic-mcp     https://github.com/eic/rucio-eic-mcp-server py   rucio_env
-register zenodo 9104 zenodo-mcp-server https://github.com/eic/zenodo-mcp-server    node zenodo_env
-# future: register indico 9105 indico-mcp-server https://github.com/cohm/indico-mcp node indico_env
+register uproot 9101 uproot-mcp-server https://github.com/eic/uproot-mcp-server \
+  '%c --transport http --host %h --port %p'
+register xrootd 9102 xrootd-mcp-server https://github.com/eic/xrootd-mcp-server \
+  'MCP_TRANSPORT=http MCP_HOST=%h MCP_PORT=%p %c' xrootd_env
+register rucio  9103 rucio-eic-mcp     https://github.com/eic/rucio-eic-mcp-server \
+  '%c --transport http --host %h --port %p' rucio_env
+# stdio-only upstream — skipped by `up` until it gains an HTTP transport
+register zenodo 9104 zenodo-mcp-server https://github.com/eic/zenodo-mcp-server \
+  '' zenodo_env
+# future: register indico 9105 indico-mcp-server https://github.com/cohm/indico-mcp \
+#   '%c --transport http --host %h --port %p' indico_env
 
 # --- load user / collaboration extensions ---
 # shellcheck disable=SC1090  # user drop-ins are dynamic by design
 if [ -d "$CONF_DIR" ]; then for f in "$CONF_DIR"/*.conf; do [ -e "$f" ] && source "$f"; done; fi
 
 enabled_servers() { echo "${EIC_MCP_SERVERS:-uproot xrootd rucio}"; }
-srv_dir() { echo "$EIC_MCP_DIR/$(basename "${SRV_REPO[$1]}" .git)"; }
 
 # ---- run inside the EIC software stack --------------------------------------
 # apptainer markers, or /etc/eic-env.sh for the Docker eic_xl image (macOS)
@@ -147,7 +165,10 @@ find_sif() {
 # Run in the EIC environment the way eic-shell/entrypoint.sh do: source
 # /etc/eic-env.sh explicitly, with --norc --noprofile so user/system dotfiles
 # can't perturb it (matches the container's deliberate no-dotfiles behaviour).
-ENV_PRELUDE='. /etc/eic-env.sh 2>/dev/null; '
+# EIC_MCP_EXTRA_PATH: prepend a host path to the container PATH (env vars
+# survive `apptainer exec`; the host PATH does not).
+# shellcheck disable=SC2016  # expands inside the container shell by design
+ENV_PRELUDE='. /etc/eic-env.sh 2>/dev/null; case "${EIC_MCP_EXTRA_PATH:-}" in ?*) export PATH="$EIC_MCP_EXTRA_PATH:$PATH";; esac; '
 sif_missing() { echo "ERROR: no eic_xl .sif found. macOS: eic-shell is Docker (no .sif) — run eic-mcp INSIDE ./eic-shell. Linux/WSL/farm: run from your eic-shell install dir, or set EIC_MCP_SIF once (it is remembered), e.g. EIC_MCP_SIF=/cvmfs/singularity.opensciencegrid.org/eicweb/eic_xl:nightly" >&2; }
 run_in_env() {
   if in_container; then bash --norc --noprofile -c "$ENV_PRELUDE$1"; else
@@ -165,13 +186,13 @@ run_in_env_bg() {  # cmd pidfile logfile  — setsid → own process group for r
     setsid apptainer exec "$sif" bash --norc --noprofile -c "$ENV_PRELUDE$cmd" >"$logfile" 2>&1 </dev/null & echo $! >"$pidfile"
   fi
 }
-# TCP connect test (SSE streams never close, so a curl GET would hang — not a failure).
-port_open() { timeout 2 bash -c "exec 3<>/dev/tcp/$BIND_HOST/$1" 2>/dev/null; }
+# TCP connect test; always probe loopback (0.0.0.0 binds include it).
+port_open() { timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 wait_ready() {  # name port timeout
   local name="$1" port="$2" timeout="${3:-60}" i pid
   pid="$(cat "$RUN_DIR/$name.pid" 2>/dev/null || true)"
   for ((i = 1; i <= timeout; i++)); do
-    port_open "$port" && { echo "  ✓ $name ready on http://$BIND_HOST:$port/mcp"; return 0; }
+    port_open "$port" && { echo "  ✓ $name ready on http://$URL_HOST:$port/mcp"; return 0; }
     # fail fast if the process we launched already died (e.g. bind failed)
     if [[ "$pid" =~ ^[0-9]+$ ]] && ! kill -0 "$pid" 2>/dev/null; then
       echo "  ✗ $name exited before binding $port (see: eic-mcp logs $name)" >&2; return 1
@@ -188,95 +209,75 @@ resolved_servers() {
     else echo "eic-mcp: unknown server '$n' (not in registry) — skipping" >&2; fi
   done
 }
+# ... and of those, the ones with an HTTP template — a stdio-only server must
+# never end up as a dead URL in a client config.
+http_servers() {
+  local n
+  for n in $(resolved_servers); do [ -n "${SRV_HTTP[$n]}" ] && echo "$n"; done
+  return 0
+}
 
-# ---- hybrid server resolution: installed → local build → bootstrap ----------
-local_stdio() {  # the bootstrapped stdio command for server $1
-  local n=$1 dir; dir="$(srv_dir "$n")"
-  case "${SRV_KIND[$n]}" in
-    py)   echo "$dir/.venv-eic/bin/${SRV_CMD[$n]}" ;;
-    node) echo "node $dir/build/src/index.js" ;;
-  esac
-}
-local_built() {  # host-visible check ($EIC_MCP_DIR lives under $EIC_MCP_STATE, visible on both sides)
-  local n=$1 dir; dir="$(srv_dir "$n")"
-  case "${SRV_KIND[$n]}" in
-    py)   [ -x "$dir/.venv-eic/bin/${SRV_CMD[$n]}" ] ;;
-    node) [ -e "$dir/build/src/index.js" ] ;;
-  esac
-}
-cmd_installed() {  # probe inside the container env (PATH incl. /opt/local/bin)
-  run_in_env "command -v '${SRV_CMD[$1]}' >/dev/null 2>&1"
-}
-bootstrap_server() {  # one-time clone + build of upstream main
-  local n=$1 dir; dir="$(srv_dir "$n")"; mkdir -p "$EIC_MCP_DIR"
-  [ -d "$dir/.git" ] || git clone --depth 1 "${SRV_REPO[$n]}" "$dir"
-  case "${SRV_KIND[$n]}" in
-    py)   run_in_env "cd '$dir' && { [ -d .venv-eic ] || python3 -m venv --system-site-packages .venv-eic; } && ./.venv-eic/bin/pip -q install ." ;;
-    node) run_in_env "cd '$dir' && $NPM_CACHE && { [ -d node_modules ] || npm install; } && npm run build" ;;
-  esac
-}
-ensure_server() {  # make server $1 runnable; no-op once installed or bootstrapped
+# ---- installed-only resolution ----------------------------------------------
+require_server() {  # 0 iff server $1's command resolves inside the image
   local n=$1
-  local_built "$n" && return 0          # bootstrapped on an earlier run (cheap check first)
-  cmd_installed "$n" && return 0        # shipped in this eic_xl image → nothing to do
-  echo "==> $n: not shipped in this eic_xl image yet — bootstrapping once (clone + build, may take a few minutes)"
-  bootstrap_server "$n"
-}
-prefetch_bridge() {  # make sure the stdio→HTTP bridge is runnable before wait_ready's clock starts
-  run_in_env "supergateway --help 2>/dev/null | grep -q outputTransport || { $NPM_CACHE; npx -y $BRIDGE_PKG --version >/dev/null 2>&1 || true; }"
+  run_in_env "command -v '${SRV_CMD[$n]}' >/dev/null 2>&1" && return 0
+  {
+    echo "  ✗ $n: '${SRV_CMD[$n]}' is not installed in this eic_xl image."
+    echo "      Your image is too old — upgrade it from your eic-shell directory:"
+    echo "          ./eic-shell --upgrade"
+    echo "      (or point eic-mcp at a local build with EIC_MCP_EXTRA_PATH=/path/to/bin)"
+  } >&2
+  return 1
 }
 
 # ---- run recipe ---------------------------------------------------------------
-# Every EIC server is a stdio MCP server; expose it over streamable HTTP with
-# supergateway (stateful: one MCP session per client, so clients can reconnect —
-# its SSE mode reuses a single session and crashes on the second connection).
-# The bridge runs under a restart loop: supergateway also dies when a client
-# disconnects mid tool call (the SDK throws on sending the late reply), and the
-# loop turns that into a 1-second blip instead of a dead server. `eic-mcp down`
-# still stops everything (the loop lives in the same setsid process group).
-# Installed command and installed bridge are preferred; both fall back to the
-# bootstrapped checkout / npx. Resolution happens at exec time INSIDE the
-# container, so it never depends on the host PATH. An image-shipped
-# supergateway is used only if its CLI understands --outputTransport
-# (a mismatched build crash-loops with "You must specify one of --stdio,
-# --sse, or --streamableHttp"); otherwise npx runs the pinned, known-good
-# version.
-BRIDGE_ARGS="--outputTransport streamableHttp --stateful"
-BRIDGE_PKG="supergateway@3.4.3"
+# Exports the server's env and execs it in native HTTP mode; the command is
+# resolved with `command -v` INSIDE the container. The restart loop turns a
+# crash into a 1s blip, but gives up after 5 immediate exits so a permanent
+# misconfiguration fails fast into the log instead of burning wait_ready's 60s
+# (a live loop PID defeats its dead-process fail-fast).
 run_cmd() {  # echo the shell command that runs server $1 as an MCP-over-HTTP service
-  local n=$1 port envfn env=""
+  local n=$1 port envfn env="" tmpl
   port=${SRV_PORT[$n]}; envfn=${SRV_ENV[$n]}
   [ -n "$envfn" ] && env="$($envfn) && "
-  echo "${env}$NPM_CACHE && STDIO=\"\$(command -v '${SRV_CMD[$n]}' || echo \"$(local_stdio "$n")\")\" && while :; do if supergateway --help 2>/dev/null | grep -q outputTransport; then supergateway --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; else npx -y $BRIDGE_PKG --stdio \"\$STDIO\" --port $port $BRIDGE_ARGS; fi; echo \"[eic-mcp] bridge exited (\$?) — restarting in 1s\" >&2; sleep 1; done"
+  tmpl=${SRV_HTTP[$n]//%c/\"\$CMD\"}
+  tmpl=${tmpl//%h/$BIND_HOST}
+  tmpl=${tmpl//%p/$port}
+  cat <<EOF
+${env}CMD="\$(command -v '${SRV_CMD[$n]}')" && fails=0 && while :; do
+  start=\$SECONDS
+  $tmpl
+  rc=\$?
+  if [ \$((SECONDS - start)) -lt 5 ]; then fails=\$((fails + 1)); else fails=0; fi
+  if [ \$fails -ge 5 ]; then
+    echo "[eic-mcp] $n exited immediately 5 times (last status \$rc) — giving up" >&2
+    exit \$rc
+  fi
+  echo "[eic-mcp] $n exited (\$rc) — restarting in 1s" >&2
+  sleep 1
+done
+EOF
 }
 
 # ---- commands ---------------------------------------------------------------
 cmd_list() {
-  printf "%-8s %-6s %-20s %-8s %s\n" NAME PORT COMMAND ENABLED REPO
-  local en; en=" $(enabled_servers) "
+  printf "%-8s %-6s %-20s %-11s %-8s %s\n" NAME PORT COMMAND TRANSPORT ENABLED REPO
+  local en n e t; en=" $(enabled_servers) "
   for n in "${SRV_ORDER[@]}"; do
     case "$en" in *" $n "*) e=yes;; *) e=no;; esac
-    printf "%-8s %-6s %-20s %-8s %s\n" "$n" "${SRV_PORT[$n]}" "${SRV_CMD[$n]}" "$e" "${SRV_REPO[$n]}"
+    [ -n "${SRV_HTTP[$n]}" ] && t=http || t=stdio-only
+    printf "%-8s %-6s %-20s %-11s %-8s %s\n" "$n" "${SRV_PORT[$n]}" "${SRV_CMD[$n]}" "$t" "$e" "${SRV_REPO[$n]}"
   done
-}
-# `setup` pre-builds everything so the first `up` is instant. Entirely optional:
-# `up` runs the same steps automatically.
-cmd_setup() {
-  mkdir -p "$RUN_DIR" "$LOG_DIR"
-  local n rc=0
-  for n in $(resolved_servers); do
-    if ensure_server "$n"; then echo "==> $n: ready"
-    else echo "  ✗ $n: bootstrap failed" >&2; rc=1; fi
-  done
-  prefetch_bridge
-  echo; echo "Setup complete (optional — 'eic-mcp up' does all of this automatically)."
-  return $rc
 }
 cmd_up() {
   mkdir -p "$RUN_DIR" "$LOG_DIR"
-  echo "Starting EIC MCP servers (streamable HTTP) ..."
+  echo "Starting EIC MCP servers (native streamable HTTP) ..."
   local n rc=0 opid; local -a launched=()
   for n in $(resolved_servers); do
+    if [ -z "${SRV_HTTP[$n]}" ]; then
+      echo "  • $n: no native HTTP transport upstream yet (stdio only) — skipping"
+      continue
+    fi
     # already running under our control? (live pidfile PID + port up) → skip
     opid="$(cat "$RUN_DIR/$n.pid" 2>/dev/null || true)"
     if [[ "$opid" =~ ^[0-9]+$ ]] && kill -0 "$opid" 2>/dev/null && port_open "${SRV_PORT[$n]}"; then
@@ -286,10 +287,9 @@ cmd_up() {
     if port_open "${SRV_PORT[$n]}"; then
       echo "  ⚠ $n: port ${SRV_PORT[$n]} already in use by another process — not starting" >&2; rc=1; continue
     fi
-    if ! ensure_server "$n"; then echo "  ✗ $n: bootstrap failed — not starting" >&2; rc=1; continue; fi
+    if ! require_server "$n"; then rc=1; continue; fi
     launched+=("$n")
   done
-  [ ${#launched[@]} -gt 0 ] && prefetch_bridge
   for n in ${launched[@]+"${launched[@]}"}; do
     run_in_env_bg "$(run_cmd "$n")" "$RUN_DIR/$n.pid" "$LOG_DIR/$n.log"
   done
@@ -323,9 +323,9 @@ stop_one() {
 cmd_down()   { echo "Stopping EIC MCP servers ..."; local n; for n in $(resolved_servers); do stop_one "$n"; done; }
 cmd_status() {
   printf "%-8s %-30s %s\n" SERVER URL STATE
-  local n; for n in $(resolved_servers); do
+  local n st; for n in $(http_servers); do
     port_open "${SRV_PORT[$n]}" && st=UP || st=down
-    printf "%-8s %-30s %s\n" "$n" "http://$BIND_HOST:${SRV_PORT[$n]}/mcp" "$st"
+    printf "%-8s %-30s %s\n" "$n" "http://$URL_HOST:${SRV_PORT[$n]}/mcp" "$st"
   done
   echo "state: $EIC_MCP_STATE"
 }
@@ -349,8 +349,8 @@ print_config() {
       # shellcheck disable=SC2016  # literal "$schema" JSON key
       echo '  "$schema": "https://opencode.ai/config.json",'
       echo '  "mcp": {'
-      for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+      for n in $(http_servers); do
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "type": "remote", "url": "%s", "enabled": true }' "$n" "$url"
       done
@@ -358,8 +358,8 @@ print_config() {
       ;;
     claude)   # Claude Code / Claude Desktop .mcp.json (project or ~/.claude.json)
       echo '{'; echo '  "mcpServers": {'
-      for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+      for n in $(http_servers); do
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "type": "http", "url": "%s" }' "$n" "$url"
       done
@@ -367,8 +367,8 @@ print_config() {
       ;;
     copilot)  # GitHub Copilot CLI ~/.copilot/mcp-config.json (preinstalled in eic-shell)
       echo '{'; echo '  "mcpServers": {'
-      for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+      for n in $(http_servers); do
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "type": "http", "url": "%s", "tools": ["*"] }' "$n" "$url"
       done
@@ -376,8 +376,8 @@ print_config() {
       ;;
     vscode)   # VS Code (Copilot Chat, Agent mode) .vscode/mcp.json
       echo '{'; echo '  "servers": {'
-      for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+      for n in $(http_servers); do
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "type": "http", "url": "%s" }' "$n" "$url"
       done
@@ -385,8 +385,8 @@ print_config() {
       ;;
     cursor)   # Cursor .cursor/mcp.json (transport inferred from the URL)
       echo '{'; echo '  "mcpServers": {'
-      for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+      for n in $(http_servers); do
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "url": "%s" }' "$n" "$url"
       done
@@ -394,17 +394,17 @@ print_config() {
       ;;
     gemini)   # Gemini CLI .gemini/settings.json (httpUrl = streamable HTTP; url would mean SSE)
       echo '{'; echo '  "mcpServers": {'
-      for n in $(resolved_servers); do
-        url="http://$BIND_HOST:${SRV_PORT[$n]}/mcp"
+      for n in $(http_servers); do
+        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
         [ $first -eq 1 ] || echo ','; first=0
         printf '    "%s": { "httpUrl": "%s" }' "$n" "$url"
       done
       echo; echo '  }'; echo '}'
       ;;
     codex)    # Codex CLI ~/.codex/config.toml (TOML — append with >>)
-      for n in $(resolved_servers); do
+      for n in $(http_servers); do
         echo "[mcp_servers.$n]"
-        echo "url = \"http://$BIND_HOST:${SRV_PORT[$n]}/mcp\""
+        echo "url = \"http://$URL_HOST:${SRV_PORT[$n]}/mcp\""
       done
       ;;
     *) echo "unknown client '$client' (use: opencode | claude | copilot | vscode | cursor | gemini | codex)" >&2; exit 2 ;;
@@ -426,7 +426,7 @@ write_client_config() {
   local client="$1" dest; dest="$(config_dest "$client")" || return 2
   case "$dest" in */*) mkdir -p "${dest%/*}";; esac
   if [ "$client" = codex ]; then   # TOML: append-only
-    if [ -f "$dest" ] && grep -q "http://$BIND_HOST:" "$dest"; then
+    if [ -f "$dest" ] && grep -q "http://$URL_HOST:" "$dest"; then
       echo "  • $dest already lists the servers — left unchanged"
     else
       print_config codex >>"$dest"; echo "  ✓ appended the server entries to $dest"
@@ -446,13 +446,12 @@ cmd_config() {  # write CLIENT's config in place; `config CLIENT -` prints to st
 
 case "${1:-}" in
   list)    cmd_list ;;
-  setup)   cmd_setup ;;
   up)      cmd_up ;;
   down)    cmd_down ;;
   restart) cmd_down; sleep 1; cmd_up ;;
   status)  cmd_status ;;
   logs)    shift; cmd_logs "${1:-}" ;;
   config)  shift; cmd_config "${1:-opencode}" "${2:-}" ;;
-  ""|-h|--help|help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "Unknown command: $1" >&2; echo "Try: eic-mcp help" >&2; exit 2 ;;
 esac
