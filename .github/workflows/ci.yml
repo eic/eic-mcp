@@ -19,12 +19,33 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck jq
           shellcheck -x bin/eic-mcp
 
+      - name: service management only — no build, network, or bridge verbs
+        run: |
+          ! grep -nE '\b(npx|git +clone|pip[0-9.]* +install|-m +venv|npm +(install|ci|run))\b' bin/eic-mcp
+          ! grep -nE '\b(bootstrap_server|cmd_setup|ensure_server|prefetch_bridge|local_stdio|local_built|NPM_CACHE|BRIDGE_PKG|BRIDGE_ARGS)\b' bin/eic-mcp
+          ! grep -niE 'supergateway|outputTransport' bin/eic-mcp
+
       - name: Registry and help smoke tests
         run: |
           bin/eic-mcp list
+          bin/eic-mcp list | awk '$1=="uproot"{print $4}' | grep -qx http
+          bin/eic-mcp list | awk '$1=="zenodo"{print $4}' | grep -qx stdio-only
           bin/eic-mcp help | head -5
+          bin/eic-mcp help | grep -q 'native streamable-HTTP'
+          ! bin/eic-mcp help | grep -q 'eic-mcp setup'
+          bin/eic-mcp setup && exit 1 || [ $? -eq 2 ]
           bin/eic-mcp bogus && exit 1 || [ $? -eq 2 ]
           bin/eic-mcp logs && exit 1 || [ $? -eq 2 ]
+
+      - name: run_cmd renders native HTTP invocations
+        run: |
+          # source everything above the dispatcher, then render each recipe
+          sed '/^case "\${1:-}" in/,$d' bin/eic-mcp > /tmp/eic-mcp.lib
+          bash -c '. /tmp/eic-mcp.lib
+            run_cmd uproot | grep -q -- "--transport http --host 127.0.0.1 --port 9101"
+            run_cmd xrootd | grep -q "MCP_TRANSPORT=http MCP_HOST=127.0.0.1 MCP_PORT=9102"
+            run_cmd rucio  | grep -q -- "--transport http --host 127.0.0.1 --port 9103"
+            run_cmd rucio  | grep -q "RUCIO_URL"'
 
       - name: config output validation
         run: |
@@ -45,6 +66,14 @@ jobs:
           "$repo/bin/eic-mcp" config opencode | grep -q 'left unchanged'
           "$repo/bin/eic-mcp" config vscode && jq -e '.servers|length==3' .vscode/mcp.json
 
-      - name: EIC_MCP_SERVERS respected
+      - name: EIC_MCP_SERVERS respected; stdio-only servers never emitted as URLs
         run: |
-          EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode - | jq -e '.mcp|keys==["uproot","zenodo"]'
+          EIC_MCP_SERVERS="uproot xrootd" bin/eic-mcp config opencode - | jq -e '.mcp|keys==["uproot","xrootd"]'
+          EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode - | jq -e '.mcp|keys==["uproot"]'
+
+      - name: EIC_MCP_HOST binds; 0.0.0.0 advertises EIC_MCP_ADVERTISE_HOST and warns
+        run: |
+          EIC_MCP_HOST=10.1.2.3 bin/eic-mcp config claude - | jq -e '.mcpServers.uproot.url=="http://10.1.2.3:9101/mcp"'
+          out="$(EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=host.example.org bin/eic-mcp config claude - 2>/tmp/warn.txt)"
+          echo "$out" | jq -e '.mcpServers.uproot.url=="http://host.example.org:9101/mcp"'
+          grep -q 'NO authentication' /tmp/warn.txt
