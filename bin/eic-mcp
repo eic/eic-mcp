@@ -24,8 +24,7 @@
 # Serve LLM clients on other machines (the servers have NO authentication):
 #   EIC_MCP_HOST=0.0.0.0 eic-mcp up   # configs then advertise EIC_MCP_ADVERTISE_HOST
 #
-# macOS eic-shell is Docker: publish the server ports so a client on the Mac
-# can reach them (inside Docker, eic-mcp binds all container interfaces itself):
+# macOS (Docker): publish the server ports:
 #   DOCKER_OPTIONS="$(./eic-shell -- eic-mcp docker-args)" ./eic-shell
 #
 # Add your own / future EIC servers WITHOUT editing this file — drop a file in
@@ -56,9 +55,7 @@ CONF_DIR="${EIC_MCP_CONF_DIR:-$HOME/.config/eic-mcp/servers.d}"
 
 # BIND_HOST is the real bind address; URL_HOST goes into client configs —
 # the same, except 0.0.0.0 advertises EIC_MCP_ADVERTISE_HOST instead.
-# Docker (macOS eic-shell): published ports (-p) reach the container's eth0,
-# never its loopback, so bind everything there; the network is private and
-# only the published ports on the host's loopback lead in.
+# Docker: -p reaches the container's eth0, not its loopback — bind all interfaces.
 if [ -z "${EIC_MCP_HOST:-}" ] && [ -f /.dockerenv ]; then
   BIND_HOST=0.0.0.0; URL_HOST=127.0.0.1
 elif [ "$BIND_HOST" = "0.0.0.0" ]; then
@@ -339,7 +336,7 @@ cmd_status() {
   done
   echo "state: $EIC_MCP_STATE"
 }
-cmd_docker_args() {  # `docker run` flags: host loopback ports → the container's server ports
+cmd_docker_args() {  # docker run -p flags for the enabled servers
   local n out=""
   for n in $(http_servers); do out+="-p 127.0.0.1:${SRV_PORT[$n]}:${SRV_PORT[$n]} "; done
   echo "${out% }"
