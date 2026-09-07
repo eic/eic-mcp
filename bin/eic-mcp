@@ -16,12 +16,17 @@
 #   eic-mcp config CLIENT     # write CLIENT's MCP config file ('config CLIENT -' prints it)
 #   eic-mcp logs NAME         # tail a server log
 #   eic-mcp down | restart
+#   eic-mcp docker-args       # docker run -p flags for the enabled servers (macOS)
 #
 # Pick which servers to run (default: uproot xrootd rucio):
 #   EIC_MCP_SERVERS="uproot xrootd rucio" eic-mcp up
 #
 # Serve LLM clients on other machines (the servers have NO authentication):
 #   EIC_MCP_HOST=0.0.0.0 eic-mcp up   # configs then advertise EIC_MCP_ADVERTISE_HOST
+#
+# macOS eic-shell is Docker: publish the server ports so a client on the Mac
+# can reach them (inside Docker, eic-mcp binds all container interfaces itself):
+#   DOCKER_OPTIONS="$(./eic-shell -- eic-mcp docker-args)" ./eic-shell
 #
 # Add your own / future EIC servers WITHOUT editing this file — drop a file in
 #   ~/.config/eic-mcp/servers.d/<name>.conf
@@ -51,7 +56,12 @@ CONF_DIR="${EIC_MCP_CONF_DIR:-$HOME/.config/eic-mcp/servers.d}"
 
 # BIND_HOST is the real bind address; URL_HOST goes into client configs —
 # the same, except 0.0.0.0 advertises EIC_MCP_ADVERTISE_HOST instead.
-if [ "$BIND_HOST" = "0.0.0.0" ]; then
+# Docker (macOS eic-shell): published ports (-p) reach the container's eth0,
+# never its loopback, so bind everything there; the network is private and
+# only the published ports on the host's loopback lead in.
+if [ -z "${EIC_MCP_HOST:-}" ] && [ -f /.dockerenv ]; then
+  BIND_HOST=0.0.0.0; URL_HOST=127.0.0.1
+elif [ "$BIND_HOST" = "0.0.0.0" ]; then
   URL_HOST="${EIC_MCP_ADVERTISE_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}' || true)}"
   URL_HOST="${URL_HOST:-127.0.0.1}"
   {
@@ -329,6 +339,11 @@ cmd_status() {
   done
   echo "state: $EIC_MCP_STATE"
 }
+cmd_docker_args() {  # `docker run` flags: host loopback ports → the container's server ports
+  local n out=""
+  for n in $(http_servers); do out+="-p 127.0.0.1:${SRV_PORT[$n]}:${SRV_PORT[$n]} "; done
+  echo "${out% }"
+}
 cmd_logs() {
   local n="${1:-}"; [ -z "$n" ] && { echo "usage: eic-mcp logs <name>" >&2; exit 2; }
   [ -n "${SRV_PORT[$n]:-}" ] || { echo "unknown server '$n' (see: eic-mcp list)" >&2; exit 2; }  # registered name only (no path traversal)
@@ -450,8 +465,9 @@ case "${1:-}" in
   down)    cmd_down ;;
   restart) cmd_down; sleep 1; cmd_up ;;
   status)  cmd_status ;;
+  docker-args) cmd_docker_args ;;
   logs)    shift; cmd_logs "${1:-}" ;;
   config)  shift; cmd_config "${1:-opencode}" "${2:-}" ;;
-  ""|-h|--help|help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
+  ""|-h|--help|help) awk 'NR > 1 && /^set -euo pipefail/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0" ;;
   *) echo "Unknown command: $1" >&2; echo "Try: eic-mcp help" >&2; exit 2 ;;
 esac

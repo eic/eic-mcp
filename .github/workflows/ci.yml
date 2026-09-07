@@ -32,6 +32,9 @@ jobs:
           bin/eic-mcp list | awk '$1=="zenodo"{print $4}' | grep -qx stdio-only
           bin/eic-mcp help | head -5
           bin/eic-mcp help | grep -q 'native streamable-HTTP'
+          bin/eic-mcp help | grep -q 'docker-args'
+          bin/eic-mcp docker-args | grep -qx -- '-p 127.0.0.1:9101:9101 -p 127.0.0.1:9102:9102 -p 127.0.0.1:9103:9103'
+          EIC_MCP_SERVERS='uproot zenodo' bin/eic-mcp docker-args | grep -qx -- '-p 127.0.0.1:9101:9101'
           ! bin/eic-mcp help | grep -q 'eic-mcp setup'
           bin/eic-mcp setup && exit 1 || [ $? -eq 2 ]
           bin/eic-mcp bogus && exit 1 || [ $? -eq 2 ]
