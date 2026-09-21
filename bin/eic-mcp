@@ -335,6 +335,8 @@ cmd_status() {
     printf "%-8s %-30s %s\n" "$n" "http://$URL_HOST:${SRV_PORT[$n]}/mcp" "$st"
   done
   echo "state: $EIC_MCP_STATE"
+  # the sif is remembered, so say which one — a stale image looks identical here
+  in_container || echo "image: $(find_sif)"
 }
 cmd_docker_args() {  # docker run -p flags for the enabled servers
   local n out=""
