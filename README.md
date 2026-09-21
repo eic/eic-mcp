@@ -1,61 +1,94 @@
 # eic-mcp
 
-Launcher for the EIC [Model Context Protocol](https://modelcontextprotocol.io)
-servers inside [eic-shell](https://github.com/eic/eic-shell).
+Runs the EIC [MCP](https://modelcontextprotocol.io) servers that the `eic_xl`
+image installs as local HTTP services, for an LLM client on the same machine.
 
-`eic-mcp` runs the EIC MCP servers (`uproot-mcp-server`, `xrootd-mcp-server`,
-`rucio-eic-mcp`, `zenodo-mcp-server`, …) as local streamable-HTTP services on
-`127.0.0.1:910x/mcp`, so an LLM client running anywhere on your machine —
-opencode, GitHub Copilot, Cursor, Claude Code, Gemini CLI, Codex — can drive
-EIC tools.
+| server | port | tools for |
+| --- | --- | --- |
+| `uproot` | 9101 | reading ROOT files and trees |
+| `xrootd` | 9102 | browsing and reading the EIC data stores |
+| `rucio` | 9103 | querying the data catalogue |
+| `zenodo` | 9104 | stdio only — `up` skips it |
 
-It is **service management only**: it starts each server the eic_xl image
-ships (`/opt/local/bin`) in its own **native** streamable-HTTP mode
-(`--transport http` for the Python servers, `MCP_TRANSPORT=http` for the Node
-one), under a small restart supervisor. There is no bridge process and
-nothing is cloned, built, or fetched at run time. If a server command is
-missing, the image is too old — upgrade it with `./eic-shell --upgrade`.
-
-## Usage
+## Install
 
 ```bash
 git clone https://github.com/eic/eic-mcp ~/eic-mcp
-export PATH="$HOME/eic-mcp/bin:$PATH"    # add to your shell profile
+export PATH="$HOME/eic-mcp/bin:$PATH"    # add this to your shell profile
 ```
 
-Then, inside eic-shell (or from the host — see below):
+## Use
+
+Inside eic-shell, or from the host — see [From the host](#from-the-host):
 
 ```bash
-eic-mcp up                 # start the enabled servers (http://127.0.0.1:910x/mcp)
-eic-mcp status             # which are listening
-eic-mcp config opencode    # print client config → redirect into your client
-eic-mcp logs uproot        # tail a server log
-eic-mcp down               # stop them
+eic-mcp up              # start them on http://127.0.0.1:910x/mcp
+eic-mcp status          # which are listening
+eic-mcp config claude   # write your client's config file
+eic-mcp logs uproot     # tail one server's log
+eic-mcp down            # stop them
 ```
 
-Connect any MCP client:
+`config` writes the file the client itself reads, and never overwrites an
+existing one. Add `-` to print instead: `eic-mcp config claude -`.
 
-```bash
-eic-mcp config opencode > opencode.jsonc        # opencode
-eic-mcp config claude   > .mcp.json             # Claude Code / Desktop
-eic-mcp config copilot  > .vscode/mcp.json      # VS Code / Copilot
-eic-mcp config cursor   > .cursor/mcp.json      # Cursor
-eic-mcp config gemini   > .gemini/settings.json # Gemini CLI
-eic-mcp config codex   >> ~/.codex/config.toml  # Codex (TOML, appended)
-```
+| client | file |
+| --- | --- |
+| `opencode` | `opencode.jsonc` |
+| `claude` | `.mcp.json` |
+| `copilot` | `~/.copilot/mcp-config.json` |
+| `vscode` | `.vscode/mcp.json` |
+| `cursor` | `.cursor/mcp.json` |
+| `gemini` | `.gemini/settings.json` |
+| `codex` | `~/.codex/config.toml`, appended |
 
-## Choosing servers
+The project-local files are picked up by a client started in that directory.
 
-Default enabled set is `uproot xrootd rucio`. Override per invocation:
+## Which servers
+
+Default: `uproot xrootd rucio`.
 
 ```bash
 EIC_MCP_SERVERS="uproot xrootd rucio zenodo" eic-mcp up
+eic-mcp list    # all registered servers
 ```
 
-## Adding servers
+## From the host
 
-New / future EIC servers are added **without editing the script** — drop a file
-in `~/.config/eic-mcp/servers.d/<name>.conf` that calls `register`:
+Outside eic-shell, `eic-mcp` finds your `eic_xl` image and runs the servers
+inside it. On Linux and WSL the `127.0.0.1` URLs work inside and outside:
+
+```bash
+eic-mcp up                                            # image located for you
+EIC_MCP_SIF=/path/to/eic_xl-nightly.sif eic-mcp up    # or name one (remembered)
+```
+
+On macOS, eic-shell is Docker and its ports are published at startup, so run
+`eic-mcp` inside it (macOS bash is 3.2; `eic-mcp` needs 4+):
+
+```bash
+DOCKER_OPTIONS="$(./eic-shell -- eic-mcp docker-args)" ./eic-shell
+eic-mcp up
+```
+
+## Other machines
+
+Everything binds `127.0.0.1`. `EIC_MCP_HOST` is a real bind address; the
+configs then advertise `EIC_MCP_ADVERTISE_HOST` rather than the unreachable
+`0.0.0.0`:
+
+```bash
+EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=mybox.lab.org eic-mcp up
+```
+
+The servers have no authentication: anything that reaches the 910x ports can
+call every tool. To use them from another machine without exposing the ports,
+keep the loopback default and tunnel: `ssh -L 9101:127.0.0.1:9101 …`.
+
+## Adding a server
+
+Register it in `~/.config/eic-mcp/servers.d/<name>.conf` instead of editing
+the script.
 
 ```bash
 # register NAME PORT COMMAND REPO HTTP_TEMPLATE [ENV_HOOK]
@@ -63,59 +96,20 @@ register indico 9105 indico-mcp-server https://github.com/cohm/indico-mcp \
   '%c --transport http --host %h --port %p'
 ```
 
-`COMMAND` is the installed server command (on `PATH` inside the image);
-`REPO` is the upstream project URL (informational, shown by `list`);
-`HTTP_TEMPLATE` says how to run the command as a native streamable-HTTP
-service — `%c` expands to the resolved command, `%h` to the bind host, `%p`
-to the port. An **empty** template marks the server stdio-only: it stays in
-the registry but `up` skips it and `config` never emits its URL (that is how
-`zenodo` is registered until it gains an HTTP transport). `ENV_HOOK` is an
-optional shell function that echoes `export …` lines for auth/config.
+- `COMMAND` — the server command, on `PATH` inside the image
+- `HTTP_TEMPLATE` — how to run it as an HTTP service: `%c` command, `%h` bind
+  host, `%p` port
+- an empty template marks it stdio-only: shown by `list`, skipped by `up`,
+  never written into a client config
+- `ENV_HOOK` — optional function echoing `export …` lines for auth or config
 
-### Testing an unreleased server
-
-`eic-mcp` never builds anything, but you can point it at a local build:
+To try a server you built yourself:
 
 ```bash
 EIC_MCP_EXTRA_PATH=/path/to/my-server/bin eic-mcp up
 ```
 
-The path is prepended to `PATH` *inside* the container, so `command -v` finds
-your build before (or instead of) the image-shipped one.
-
-## Serving clients on other machines
-
-By default everything binds `127.0.0.1`. `EIC_MCP_HOST` is a **real bind
-address**: set it to `0.0.0.0` to serve other machines, and the client
-configs then advertise `EIC_MCP_ADVERTISE_HOST` (default: this host's first
-address) instead of the unconnectable `0.0.0.0`.
-
-```bash
-EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=mybox.lab.org eic-mcp up
-EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=mybox.lab.org eic-mcp config opencode -
-```
-
-**The servers have no authentication** — anything that can reach the 910x
-ports gets the full tool surface. Use only on a trusted network, or keep the
-loopback default and tunnel: `ssh -L 9101:127.0.0.1:9101 …`.
-
-## From the host
-
-Outside eic-shell, `eic-mcp` finds your `eic_xl` image automatically (or set
-`EIC_MCP_SIF`) and execs into the container for you:
-
-```bash
-EIC_MCP_SIF=/path/to/eic_xl-nightly.sif eic-mcp up
-```
-
-On Linux/WSL the `127.0.0.1` URLs work inside and outside the container. On
-macOS (Docker) publish the ports, or run the client inside eic-shell:
-
-```bash
-DOCKER_OPTIONS="$(./eic-shell -- eic-mcp docker-args)" ./eic-shell
-```
-
-Older launchers lack `DOCKER_OPTIONS`: `grep -q DOCKER_OPTIONS eic-shell || re-run install.sh`.
+The path is prepended to `PATH` inside the container.
 
 ## License
 
