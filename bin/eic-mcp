@@ -2,10 +2,9 @@
 #
 # eic-mcp — run the EIC MCP servers installed in eic-shell as local HTTP
 #           services for an LLM client (opencode, Claude Code, Copilot, …).
-#           Service management only: it starts what the image ships
-#           (/opt/local/bin) in native streamable-HTTP mode; it never
-#           clones, builds, bridges, or fetches anything. A missing server
-#           means the image is too old — upgrade eic-shell.
+#           It starts the servers installed in /opt/local/bin in their native
+#           streamable-HTTP mode; nothing is cloned, built or fetched. A
+#           missing server means the image is too old — upgrade eic-shell.
 #
 # Run it INSIDE eic-shell, or from the host: it finds your eic_xl .sif
 # automatically (or set EIC_MCP_SIF).
@@ -27,7 +26,7 @@
 # macOS (Docker): publish the server ports:
 #   DOCKER_OPTIONS="$(./eic-shell -- eic-mcp docker-args)" ./eic-shell
 #
-# Add your own / future EIC servers WITHOUT editing this file — drop a file in
+# Add your own / future EIC servers without editing this file — drop a file in
 #   ~/.config/eic-mcp/servers.d/<name>.conf
 # that calls `register …` (see the built-ins below for the signature).
 #

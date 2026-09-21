@@ -24,13 +24,13 @@ Inside eic-shell, or from the host — see [From the host](#from-the-host):
 ```bash
 eic-mcp up              # start them on http://127.0.0.1:910x/mcp
 eic-mcp status          # which are listening
-eic-mcp config claude   # write your client's config file
+eic-mcp config claude   # write the client config file
 eic-mcp logs uproot     # tail one server's log
 eic-mcp down            # stop them
 ```
 
-`config` writes the file the client itself reads, and never overwrites an
-existing one. Add `-` to print instead: `eic-mcp config claude -`.
+`config` writes the file the client reads, and never overwrites an existing
+one. Add `-` to print instead: `eic-mcp config claude -`.
 
 | client | file |
 | --- | --- |
@@ -42,7 +42,7 @@ existing one. Add `-` to print instead: `eic-mcp config claude -`.
 | `gemini` | `.gemini/settings.json` |
 | `codex` | `~/.codex/config.toml`, appended |
 
-The project-local files are picked up by a client started in that directory.
+Project-local files apply to a client started in that directory.
 
 ## Which servers
 
@@ -55,12 +55,12 @@ eic-mcp list    # all registered servers
 
 ## From the host
 
-Outside eic-shell, `eic-mcp` finds your `eic_xl` image and runs the servers
+Outside eic-shell, `eic-mcp` finds the `eic_xl` image and runs the servers
 inside it. On Linux and WSL the `127.0.0.1` URLs work inside and outside:
 
 ```bash
-eic-mcp up                                            # image located for you
-EIC_MCP_SIF=/path/to/eic_xl-nightly.sif eic-mcp up    # or name one (remembered)
+eic-mcp up                                            # image located automatically
+EIC_MCP_SIF=/path/to/eic_xl-nightly.sif eic-mcp up    # or set one (remembered)
 ```
 
 On macOS, eic-shell is Docker and its ports are published at startup, so run
@@ -73,9 +73,8 @@ eic-mcp up
 
 ## Other machines
 
-Everything binds `127.0.0.1`. `EIC_MCP_HOST` is a real bind address; the
-configs then advertise `EIC_MCP_ADVERTISE_HOST` rather than the unreachable
-`0.0.0.0`:
+Everything binds `127.0.0.1`. `EIC_MCP_HOST` sets the bind address; the configs
+then advertise `EIC_MCP_ADVERTISE_HOST` instead of the unreachable `0.0.0.0`:
 
 ```bash
 EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=mybox.lab.org eic-mcp up
@@ -103,7 +102,7 @@ register indico 9105 indico-mcp-server https://github.com/cohm/indico-mcp \
   never written into a client config
 - `ENV_HOOK` — optional function echoing `export …` lines for auth or config
 
-To try a server you built yourself:
+To use a locally built server:
 
 ```bash
 EIC_MCP_EXTRA_PATH=/path/to/my-server/bin eic-mcp up
