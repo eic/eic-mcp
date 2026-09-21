@@ -5,10 +5,10 @@ image installs as local HTTP services, for an LLM client on the same machine.
 
 | server | port | tools for |
 | --- | --- | --- |
-| `uproot` | 9101 | reading ROOT files and trees |
-| `xrootd` | 9102 | browsing and reading the EIC data stores |
-| `rucio` | 9103 | querying the data catalogue |
-| `zenodo` | 9104 | stdio only — `up` skips it |
+| [`uproot`](https://github.com/eic/uproot-mcp-server) | 9101 | reading ROOT files and trees |
+| [`xrootd`](https://github.com/eic/xrootd-mcp-server) | 9102 | browsing and reading the EIC data stores |
+| [`rucio`](https://github.com/eic/rucio-eic-mcp-server) | 9103 | querying the data catalogue |
+| [`zenodo`](https://github.com/eic/zenodo-mcp-server) | 9104 | stdio only — `up` skips it |
 
 ## Install
 
