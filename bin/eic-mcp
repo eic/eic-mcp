@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
 #
-# eic-mcp — run the EIC MCP servers installed in eic-shell as local HTTP
-#           services for an LLM client (opencode, Claude Code, Copilot, …).
-#           It starts the servers installed in /opt/local/bin in their native
-#           streamable-HTTP mode; nothing is cloned, built or fetched. A
-#           missing server means the image is too old — upgrade eic-shell.
+# eic-mcp — give an LLM client (opencode, Claude Code, Copilot, …) the EIC MCP
+#           servers installed in eic-shell. Nothing is cloned, built or
+#           fetched; a missing server means the image is too old — upgrade it.
 #
 # Run it INSIDE eic-shell, or from the host: it finds your eic_xl .sif
 # automatically (or set EIC_MCP_SIF).
 #
+#   eic-mcp config CLIENT     # write CLIENT's MCP config ('config CLIENT -' prints it)
 #   eic-mcp list              # show the server registry
-#   eic-mcp up                # start them (http://127.0.0.1:910x/mcp)
+#
+# On your own machine `config` starts the servers as local HTTP services and
+# writes their URLs. On a shared host (another user has processes here, or
+# holds the 910x ports) it writes commands instead: the client spawns the
+# servers over stdio (`eic-mcp run NAME`) as you, and they exit with it — no
+# ports to collide on, nothing other users can reach. Force either way:
+#
+#   eic-mcp config CLIENT --stdio | --http
+#   eic-mcp up                # start the native streamable-HTTP servers (http://127.0.0.1:910x/mcp)
 #   eic-mcp status            # which are listening
-#   eic-mcp config CLIENT     # write CLIENT's MCP config file ('config CLIENT -' prints it)
-#   eic-mcp config CLIENT --stdio   # commands instead of URLs: the client spawns `eic-mcp run NAME`
 #   eic-mcp logs NAME         # tail a server log
 #   eic-mcp down | restart
 #   eic-mcp docker-args       # docker run -p flags for the enabled servers (macOS)
 #
-# Pick which servers to run (default: uproot xrootd rucio):
-#   EIC_MCP_SERVERS="uproot xrootd rucio" eic-mcp up
+# Pick which servers (default: uproot xrootd rucio):
+#   EIC_MCP_SERVERS="uproot xrootd rucio zenodo" eic-mcp config opencode
 #
 # Serve LLM clients on other machines (the servers have NO authentication):
 #   EIC_MCP_HOST=0.0.0.0 eic-mcp up   # configs then advertise EIC_MCP_ADVERTISE_HOST
@@ -217,6 +222,15 @@ foreign_owner() {  # name of another user holding port $1, empty if free or ours
   [ -n "$uid" ] && [ "$uid" != "$(id -u)" ] && { id -nu "$uid" 2>/dev/null || echo "uid $uid"; }
   return 0
 }
+STDIO_HINT="use stdio instead: eic-mcp config <client> --stdio"
+# Shared host: another real user has a process here, or holds our ports.
+shared_host() {
+  local me n; me="$(id -u)"
+  (stat -c %u /proc/[0-9]* 2>/dev/null || true) \
+    | awk -v me="$me" '$1 >= 1000 && $1 < 60000 && $1 != me { found = 1; exit } END { exit !found }' && return 0
+  for n in $(http_servers); do [ -n "$(foreign_owner "${SRV_PORT[$n]}")" ] && return 0; done
+  return 1
+}
 wait_ready() {  # name port timeout
   local name="$1" port="$2" timeout="${3:-60}" i pid
   pid="$(cat "$RUN_DIR/$name.pid" 2>/dev/null || true)"
@@ -300,6 +314,7 @@ cmd_list() {
 }
 cmd_up() {
   mkdir -p "$RUN_DIR" "$LOG_DIR"
+  shared_host && echo "⚠ shared host: the servers have NO authentication — every user here can reach them; $STDIO_HINT" >&2
   echo "Starting EIC MCP servers (native streamable HTTP) ..."
   local n rc=0 opid owner; local -a launched=()
   for n in $(resolved_servers); do
@@ -316,6 +331,7 @@ cmd_up() {
     if port_open "${SRV_PORT[$n]}"; then
       owner="$(foreign_owner "${SRV_PORT[$n]}")"
       echo "  ⚠ $n: port ${SRV_PORT[$n]} already in use by ${owner:+user }${owner:-another process} — not starting" >&2
+      [ -n "$owner" ] && echo "    $STDIO_HINT" >&2
       rc=1; continue
     fi
     if ! require_server "$n"; then rc=1; continue; fi
@@ -327,7 +343,7 @@ cmd_up() {
   [ ${#launched[@]} -gt 0 ] && echo "Waiting for servers ..."
   for n in ${launched[@]+"${launched[@]}"}; do wait_ready "$n" "${SRV_PORT[$n]}" 60 || rc=1; done
   echo
-  [ "$rc" -eq 0 ] && echo "All servers up. Write your client's config with: eic-mcp config <client>" \
+  [ "$rc" -eq 0 ] && echo "All servers up." \
                   || echo "Some servers failed — check 'eic-mcp logs <name>'." >&2
   return $rc
 }
@@ -387,10 +403,10 @@ cmd_run() {  # serve $1 on stdio in the EIC environment — for a client that sp
 #   cursor   → .cursor/mcp.json              gemini → .gemini/settings.json
 #   codex    → ~/.codex/config.toml (appended)
 # It never overwrites an existing file; `config CLIENT -` prints to stdout instead.
-# http entries are the servers' URLs; stdio entries are commands — the client
-# spawns `eic-mcp run NAME` per server, no ports, no daemons, every stdio
-# server counts. Default: http.
-TRANSPORT=http
+# http entries are the servers' URLs (`up` runs first); stdio entries are
+# commands — the client spawns `eic-mcp run NAME` per server, no ports, no
+# daemons, every stdio server counts. Default: stdio on a shared host, else http.
+TRANSPORT=""
 config_servers() { if [ "$TRANSPORT" = stdio ]; then resolved_servers; else http_servers; fi; }
 server_entry() {  # client name → that server's entry in the client's config
   local client="$1" n="$2" url="http://$URL_HOST:${SRV_PORT[$2]}/mcp"
@@ -467,14 +483,17 @@ check_ports_ours() {
   local n owner
   for n in $(http_servers); do
     owner="$(foreign_owner "${SRV_PORT[$n]}")"
-    [ -z "$owner" ] || { echo "ERROR: port ${SRV_PORT[$n]} ($n) belongs to user $owner" >&2; exit 1; }
+    [ -z "$owner" ] || { echo "ERROR: port ${SRV_PORT[$n]} ($n) belongs to user $owner — $STDIO_HINT" >&2; exit 1; }
   done
 }
 cmd_config() {  # config [CLIENT] [--http|--stdio] [-]  — `-` prints to stdout
   local client=opencode print=0 a
   for a in "$@"; do case "$a" in --http) TRANSPORT=http;; --stdio) TRANSPORT=stdio;; -) print=1;; *) client="$a";; esac; done
   config_dest "$client" >/dev/null || exit 2
-  if [ "$TRANSPORT" = http ]; then check_ports_ours; fi
+  if [ -z "$TRANSPORT" ]; then
+    if shared_host; then TRANSPORT=stdio; echo "  • shared host — the client will spawn the servers over stdio (--http forces URLs)" >&2; else TRANSPORT=http; fi
+  fi
+  if [ "$TRANSPORT" = http ]; then check_ports_ours; [ $print -eq 1 ] || cmd_up || exit 1; fi
   if [ $print -eq 1 ]; then print_config "$client"; else write_client_config "$client"; fi
 }
 
