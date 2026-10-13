@@ -13,6 +13,7 @@
 #   eic-mcp up                # start them (http://127.0.0.1:910x/mcp)
 #   eic-mcp status            # which are listening
 #   eic-mcp config CLIENT     # write CLIENT's MCP config file ('config CLIENT -' prints it)
+#   eic-mcp config CLIENT --stdio   # commands instead of URLs: the client spawns `eic-mcp run NAME`
 #   eic-mcp logs NAME         # tail a server log
 #   eic-mcp down | restart
 #   eic-mcp docker-args       # docker run -p flags for the enabled servers (macOS)
@@ -51,6 +52,16 @@ BIND_HOST="${EIC_MCP_HOST:-127.0.0.1}"
 EIC_MCP_SIF="${EIC_MCP_SIF:-}"
 RUCIO_CFG="${RUCIO_CFG:-/opt/rucio/etc/rucio.cfg}"
 CONF_DIR="${EIC_MCP_CONF_DIR:-$HOME/.config/eic-mcp/servers.d}"
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"   # absolute path, for stdio configs
+# How a client spawns a server over stdio. Inside eic-shell it is the launcher,
+# `./eic-shell -- eic-mcp run NAME`: that works for a client on the host, and
+# inside, where the launcher just runs the command. Elsewhere: this script.
+launcher="${EIC_SHELL_PREFIX:+$(dirname "$EIC_SHELL_PREFIX")/eic-shell}"
+if [ -n "$launcher" ] && [ -f "$launcher" ]; then
+  RUN_CMD="$launcher"; RUN_ARGS='"--", "eic-mcp", "run"'
+else
+  RUN_CMD="$SELF"; RUN_ARGS='"run"'
+fi
 
 # BIND_HOST is the real bind address; URL_HOST goes into client configs —
 # the same, except 0.0.0.0 advertises EIC_MCP_ADVERTISE_HOST instead.
@@ -363,6 +374,12 @@ cmd_logs() {
   [ -n "${SRV_PORT[$n]:-}" ] || { echo "unknown server '$n' (see: eic-mcp list)" >&2; exit 2; }  # registered name only (no path traversal)
   exec tail -n 100 -f "$LOG_DIR/$n.log"
 }
+cmd_run() {  # serve $1 on stdio in the EIC environment — for a client that spawns it
+  local n="${1:-}" env=""
+  [ -n "$n" ] && [ -n "${SRV_PORT[$n]:-}" ] || { echo "usage: eic-mcp run <name> (see: eic-mcp list)" >&2; exit 2; }
+  [ -n "${SRV_ENV[$n]}" ] && env="$(${SRV_ENV[$n]}) && "
+  run_in_env "${env}exec \"\$(command -v '${SRV_CMD[$n]}')\""
+}
 # `config CLIENT` writes an MCP client config pointing at the enabled servers'
 # streamable-HTTP URLs, in the file that client actually reads:
 #   opencode → opencode.jsonc (launch dir)   claude → .mcp.json
@@ -370,74 +387,51 @@ cmd_logs() {
 #   cursor   → .cursor/mcp.json              gemini → .gemini/settings.json
 #   codex    → ~/.codex/config.toml (appended)
 # It never overwrites an existing file; `config CLIENT -` prints to stdout instead.
+# http entries are the servers' URLs; stdio entries are commands — the client
+# spawns `eic-mcp run NAME` per server, no ports, no daemons, every stdio
+# server counts. Default: http.
+TRANSPORT=http
+config_servers() { if [ "$TRANSPORT" = stdio ]; then resolved_servers; else http_servers; fi; }
+server_entry() {  # client name → that server's entry in the client's config
+  local client="$1" n="$2" url="http://$URL_HOST:${SRV_PORT[$2]}/mcp"
+  local cmd="\"command\": \"$RUN_CMD\", \"args\": [$RUN_ARGS, \"$n\"]"
+  if [ "$TRANSPORT" = stdio ]; then
+    case "$client" in
+      opencode)      echo "{ \"type\": \"local\", \"command\": [\"$RUN_CMD\", $RUN_ARGS, \"$n\"], \"enabled\": true }" ;;
+      claude|vscode) echo "{ \"type\": \"stdio\", $cmd }" ;;
+      copilot)       echo "{ \"type\": \"stdio\", $cmd, \"tools\": [\"*\"] }" ;;
+      cursor|gemini) echo "{ $cmd }" ;;
+      codex)         printf 'command = "%s"\nargs = [%s, "%s"]\n' "$RUN_CMD" "$RUN_ARGS" "$n" ;;
+    esac
+  else
+    case "$client" in
+      opencode)      echo "{ \"type\": \"remote\", \"url\": \"$url\", \"enabled\": true }" ;;
+      claude|vscode) echo "{ \"type\": \"http\", \"url\": \"$url\" }" ;;
+      copilot)       echo "{ \"type\": \"http\", \"url\": \"$url\", \"tools\": [\"*\"] }" ;;
+      cursor)        echo "{ \"url\": \"$url\" }" ;;
+      gemini)        echo "{ \"httpUrl\": \"$url\" }" ;;   # httpUrl = streamable HTTP; url would mean SSE
+      codex)         echo "url = \"$url\"" ;;
+    esac
+  fi
+}
 print_config() {
-  local client="${1:-opencode}" n url first=1
+  local client="${1:-opencode}" n first=1 key
   case "$client" in
-    opencode)
-      echo '{'
-      # shellcheck disable=SC2016  # literal "$schema" JSON key
-      echo '  "$schema": "https://opencode.ai/config.json",'
-      echo '  "mcp": {'
-      for n in $(http_servers); do
-        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
-        [ $first -eq 1 ] || echo ','; first=0
-        printf '    "%s": { "type": "remote", "url": "%s", "enabled": true }' "$n" "$url"
-      done
-      echo; echo '  }'; echo '}'
-      ;;
-    claude)   # Claude Code / Claude Desktop .mcp.json (project or ~/.claude.json)
-      echo '{'; echo '  "mcpServers": {'
-      for n in $(http_servers); do
-        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
-        [ $first -eq 1 ] || echo ','; first=0
-        printf '    "%s": { "type": "http", "url": "%s" }' "$n" "$url"
-      done
-      echo; echo '  }'; echo '}'
-      ;;
-    copilot)  # GitHub Copilot CLI ~/.copilot/mcp-config.json (preinstalled in eic-shell)
-      echo '{'; echo '  "mcpServers": {'
-      for n in $(http_servers); do
-        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
-        [ $first -eq 1 ] || echo ','; first=0
-        printf '    "%s": { "type": "http", "url": "%s", "tools": ["*"] }' "$n" "$url"
-      done
-      echo; echo '  }'; echo '}'
-      ;;
-    vscode)   # VS Code (Copilot Chat, Agent mode) .vscode/mcp.json
-      echo '{'; echo '  "servers": {'
-      for n in $(http_servers); do
-        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
-        [ $first -eq 1 ] || echo ','; first=0
-        printf '    "%s": { "type": "http", "url": "%s" }' "$n" "$url"
-      done
-      echo; echo '  }'; echo '}'
-      ;;
-    cursor)   # Cursor .cursor/mcp.json (transport inferred from the URL)
-      echo '{'; echo '  "mcpServers": {'
-      for n in $(http_servers); do
-        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
-        [ $first -eq 1 ] || echo ','; first=0
-        printf '    "%s": { "url": "%s" }' "$n" "$url"
-      done
-      echo; echo '  }'; echo '}'
-      ;;
-    gemini)   # Gemini CLI .gemini/settings.json (httpUrl = streamable HTTP; url would mean SSE)
-      echo '{'; echo '  "mcpServers": {'
-      for n in $(http_servers); do
-        url="http://$URL_HOST:${SRV_PORT[$n]}/mcp"
-        [ $first -eq 1 ] || echo ','; first=0
-        printf '    "%s": { "httpUrl": "%s" }' "$n" "$url"
-      done
-      echo; echo '  }'; echo '}'
-      ;;
-    codex)    # Codex CLI ~/.codex/config.toml (TOML — append with >>)
-      for n in $(http_servers); do
-        echo "[mcp_servers.$n]"
-        echo "url = \"http://$URL_HOST:${SRV_PORT[$n]}/mcp\""
-      done
-      ;;
+    opencode) key=mcp ;;                        # opencode.jsonc
+    claude|copilot|cursor|gemini) key=mcpServers ;;
+    vscode)   key=servers ;;                    # .vscode/mcp.json (Copilot Chat, Agent mode)
+    codex)    for n in $(config_servers); do echo "[mcp_servers.$n]"; server_entry codex "$n"; done; return ;;
     *) echo "unknown client '$client' (use: opencode | claude | copilot | vscode | cursor | gemini | codex)" >&2; exit 2 ;;
   esac
+  echo '{'
+  # shellcheck disable=SC2016  # literal "$schema" JSON key
+  [ "$client" = opencode ] && echo '  "$schema": "https://opencode.ai/config.json",'
+  echo "  \"$key\": {"
+  for n in $(config_servers); do
+    [ $first -eq 1 ] || echo ','; first=0
+    printf '    "%s": %s' "$n" "$(server_entry "$client" "$n")"
+  done
+  echo; echo '  }'; echo '}'
 }
 config_dest() {  # the file each client actually reads
   case "$1" in
@@ -455,7 +449,7 @@ write_client_config() {
   local client="$1" dest; dest="$(config_dest "$client")" || return 2
   case "$dest" in */*) mkdir -p "${dest%/*}";; esac
   if [ "$client" = codex ]; then   # TOML: append-only
-    if [ -f "$dest" ] && grep -q "http://$URL_HOST:" "$dest"; then
+    if [ -f "$dest" ] && grep -q '^\[mcp_servers\.' "$dest"; then
       echo "  • $dest already lists the servers — left unchanged"
     else
       print_config codex >>"$dest"; echo "  ✓ appended the server entries to $dest"
@@ -476,11 +470,12 @@ check_ports_ours() {
     [ -z "$owner" ] || { echo "ERROR: port ${SRV_PORT[$n]} ($n) belongs to user $owner" >&2; exit 1; }
   done
 }
-cmd_config() {  # write CLIENT's config in place; `config CLIENT -` prints to stdout
-  local client="${1:-opencode}"
+cmd_config() {  # config [CLIENT] [--http|--stdio] [-]  — `-` prints to stdout
+  local client=opencode print=0 a
+  for a in "$@"; do case "$a" in --http) TRANSPORT=http;; --stdio) TRANSPORT=stdio;; -) print=1;; *) client="$a";; esac; done
   config_dest "$client" >/dev/null || exit 2
-  check_ports_ours
-  if [ "${2:-}" = "-" ]; then print_config "$client"; else write_client_config "$client"; fi
+  if [ "$TRANSPORT" = http ]; then check_ports_ours; fi
+  if [ $print -eq 1 ]; then print_config "$client"; else write_client_config "$client"; fi
 }
 
 case "${1:-}" in
@@ -491,7 +486,8 @@ case "${1:-}" in
   status)  cmd_status ;;
   docker-args) cmd_docker_args ;;
   logs)    shift; cmd_logs "${1:-}" ;;
-  config)  shift; cmd_config "${1:-opencode}" "${2:-}" ;;
+  run)     shift; cmd_run "${1:-}" ;;
+  config)  shift; cmd_config "$@" ;;
   ""|-h|--help|help) awk 'NR > 1 && /^set -euo pipefail/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0" ;;
   *) echo "Unknown command: $1" >&2; echo "Try: eic-mcp help" >&2; exit 2 ;;
 esac

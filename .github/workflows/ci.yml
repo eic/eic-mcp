@@ -73,6 +73,7 @@ jobs:
         run: |
           EIC_MCP_SERVERS="uproot xrootd" bin/eic-mcp config opencode - | jq -e '.mcp|keys==["uproot","xrootd"]'
           EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode - | jq -e '.mcp|keys==["uproot"]'
+          EIC_MCP_SERVERS="uproot zenodo" bin/eic-mcp config opencode --stdio - | jq -e '.mcp|keys==["uproot","zenodo"]'
 
       - name: EIC_MCP_HOST binds; 0.0.0.0 advertises EIC_MCP_ADVERTISE_HOST and warns
         run: |
@@ -80,3 +81,18 @@ jobs:
           out="$(EIC_MCP_HOST=0.0.0.0 EIC_MCP_ADVERTISE_HOST=host.example.org bin/eic-mcp config claude - 2>/tmp/warn.txt)"
           echo "$out" | jq -e '.mcpServers.uproot.url=="http://host.example.org:9101/mcp"'
           grep -q 'NO authentication' /tmp/warn.txt
+
+      - name: --stdio configs spawn `eic-mcp run`
+        run: |
+          bin/eic-mcp config opencode --stdio - | jq -e '.mcp.uproot.type=="local" and (.mcp.uproot.command[1:]==["run","uproot"])'
+          bin/eic-mcp config claude --stdio -   | jq -e '.mcpServers.rucio.type=="stdio" and (.mcpServers.rucio.args==["run","rucio"])'
+          bin/eic-mcp config codex --stdio -    | grep -q 'args = \["run", "xrootd"\]'
+          bin/eic-mcp run && exit 1 || [ $? -eq 2 ]
+          bin/eic-mcp run bogus && exit 1 || [ $? -eq 2 ]
+
+      - name: stdio entries go through the eic-shell launcher inside eic-shell
+        run: |
+          repo="$PWD"; d="$(mktemp -d)"; mkdir -p "$d/eic/local"; touch "$d/eic/eic-shell"; cd "$d"
+          EIC_SHELL_PREFIX="$d/eic/local" "$repo/bin/eic-mcp" config claude --stdio
+          jq -e --arg l "$d/eic/eic-shell" '.mcpServers.uproot.command==$l and (.mcpServers.uproot.args==["--","eic-mcp","run","uproot"])' .mcp.json
+          "$repo/bin/eic-mcp" config opencode --stdio - | jq -e --arg s "$repo/bin/eic-mcp" '.mcp.uproot.command==[$s,"run","uproot"]'
