@@ -194,6 +194,18 @@ run_in_env_bg() {  # cmd pidfile logfile  — setsid → own process group for r
 }
 # TCP connect test; always probe loopback (0.0.0.0 binds include it).
 port_open() { timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
+# Who listens on port $1: the socket's uid from /proc/net/tcp (empty if nobody,
+# or no /proc). On a shared host another user's servers answer on our ports.
+port_owner() {
+  local hex; hex="$(printf ':%04X' "$1")"
+  awk -v h="$hex" 'FNR > 1 && $4 == "0A" && substr($2, length($2) - 4) == h { print $8; exit }' \
+    /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+foreign_owner() {  # name of another user holding port $1, empty if free or ours
+  local uid; uid="$(port_owner "$1")"
+  [ -n "$uid" ] && [ "$uid" != "$(id -u)" ] && { id -nu "$uid" 2>/dev/null || echo "uid $uid"; }
+  return 0
+}
 wait_ready() {  # name port timeout
   local name="$1" port="$2" timeout="${3:-60}" i pid
   pid="$(cat "$RUN_DIR/$name.pid" 2>/dev/null || true)"
@@ -278,7 +290,7 @@ cmd_list() {
 cmd_up() {
   mkdir -p "$RUN_DIR" "$LOG_DIR"
   echo "Starting EIC MCP servers (native streamable HTTP) ..."
-  local n rc=0 opid; local -a launched=()
+  local n rc=0 opid owner; local -a launched=()
   for n in $(resolved_servers); do
     if [ -z "${SRV_HTTP[$n]}" ]; then
       echo "  • $n: no native HTTP transport upstream yet (stdio only) — skipping"
@@ -291,7 +303,9 @@ cmd_up() {
     fi
     # port held by an unrelated process → don't clobber it, report failure
     if port_open "${SRV_PORT[$n]}"; then
-      echo "  ⚠ $n: port ${SRV_PORT[$n]} already in use by another process — not starting" >&2; rc=1; continue
+      owner="$(foreign_owner "${SRV_PORT[$n]}")"
+      echo "  ⚠ $n: port ${SRV_PORT[$n]} already in use by ${owner:+user }${owner:-another process} — not starting" >&2
+      rc=1; continue
     fi
     if ! require_server "$n"; then rc=1; continue; fi
     launched+=("$n")
@@ -329,8 +343,10 @@ stop_one() {
 cmd_down()   { echo "Stopping EIC MCP servers ..."; local n; for n in $(resolved_servers); do stop_one "$n"; done; }
 cmd_status() {
   printf "%-8s %-30s %s\n" SERVER URL STATE
-  local n st; for n in $(http_servers); do
-    port_open "${SRV_PORT[$n]}" && st=UP || st=down
+  local n st owner; for n in $(http_servers); do
+    if port_open "${SRV_PORT[$n]}"; then
+      owner="$(foreign_owner "${SRV_PORT[$n]}")"; st="UP${owner:+ (user $owner — not yours)}"
+    else st=down; fi
     printf "%-8s %-30s %s\n" "$n" "http://$URL_HOST:${SRV_PORT[$n]}/mcp" "$st"
   done
   echo "state: $EIC_MCP_STATE"
@@ -451,9 +467,19 @@ write_client_config() {
     case "$dest" in /*) echo "  ✓ wrote $dest";; *) echo "  ✓ wrote $PWD/$dest — launch $client in this directory";; esac
   fi
 }
+# An HTTP config pointing at another user's servers would silently run every
+# tool as them — refuse it.
+check_ports_ours() {
+  local n owner
+  for n in $(http_servers); do
+    owner="$(foreign_owner "${SRV_PORT[$n]}")"
+    [ -z "$owner" ] || { echo "ERROR: port ${SRV_PORT[$n]} ($n) belongs to user $owner" >&2; exit 1; }
+  done
+}
 cmd_config() {  # write CLIENT's config in place; `config CLIENT -` prints to stdout
   local client="${1:-opencode}"
   config_dest "$client" >/dev/null || exit 2
+  check_ports_ours
   if [ "${2:-}" = "-" ]; then print_config "$client"; else write_client_config "$client"; fi
 }
 
