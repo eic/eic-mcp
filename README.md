@@ -33,7 +33,12 @@ reach, and every registered server counts, `zenodo` included. Force either
 way with `--http` or `--stdio`.
 
 `config` writes the file the client reads, and never overwrites an existing
-one. Add `-` to print instead: `eic-mcp config claude -`.
+one. Add `-` to print instead: `eic-mcp config claude -`. Next to a
+project-local file it also writes `AGENTS.md`, the facts an assistant needs
+about EIC data (for Claude Code and Gemini, a `CLAUDE.md` or `GEMINI.md`
+that imports it). Edit it freely. It is the eic-shell variant of the site
+files generated in [eic/skills](https://eic.github.io/skills/#/agent-context);
+`share/eic-mcp/AGENTS.md` is copied from there at release.
 
 | client | file |
 | --- | --- |

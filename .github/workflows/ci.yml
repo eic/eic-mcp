@@ -90,9 +90,11 @@ jobs:
           bin/eic-mcp run && exit 1 || [ $? -eq 2 ]
           bin/eic-mcp run bogus && exit 1 || [ $? -eq 2 ]
 
-      - name: stdio entries go through the eic-shell launcher inside eic-shell
+      - name: stdio entries go through the eic-shell launcher inside eic-shell; AGENTS.md written
         run: |
           repo="$PWD"; d="$(mktemp -d)"; mkdir -p "$d/eic/local"; touch "$d/eic/eic-shell"; cd "$d"
           EIC_SHELL_PREFIX="$d/eic/local" "$repo/bin/eic-mcp" config claude --stdio
           jq -e --arg l "$d/eic/eic-shell" '.mcpServers.uproot.command==$l and (.mcpServers.uproot.args==["--","eic-mcp","run","uproot"])' .mcp.json
+          grep -q 'agent context' AGENTS.md && grep -qx '@AGENTS.md' CLAUDE.md
+          "$repo/bin/eic-mcp" config opencode --stdio | grep -q 'AGENTS.md exists'
           "$repo/bin/eic-mcp" config opencode --stdio - | jq -e --arg s "$repo/bin/eic-mcp" '.mcp.uproot.command==[$s,"run","uproot"]'
