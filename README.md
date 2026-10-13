@@ -1,14 +1,14 @@
 # eic-mcp
 
-Runs the EIC [MCP](https://modelcontextprotocol.io) servers that the `eic_xl`
-image installs as local HTTP services, for an LLM client on the same machine.
+Gives an LLM client the EIC [MCP](https://modelcontextprotocol.io) servers
+that the `eic_xl` image installs.
 
-| server | port | tools for |
+| server | tools for | HTTP port |
 | --- | --- | --- |
-| [`uproot`](https://github.com/eic/uproot-mcp-server) | 9101 | reading ROOT files and trees |
-| [`xrootd`](https://github.com/eic/xrootd-mcp-server) | 9102 | browsing and reading the EIC data stores |
-| [`rucio`](https://github.com/eic/rucio-eic-mcp-server) | 9103 | querying the data catalogue |
-| [`zenodo`](https://github.com/eic/zenodo-mcp-server) | 9104 | stdio only — `up` skips it |
+| [`uproot`](https://github.com/eic/uproot-mcp-server) | reading ROOT files and trees | 9101 |
+| [`xrootd`](https://github.com/eic/xrootd-mcp-server) | browsing and reading the EIC data stores | 9102 |
+| [`rucio`](https://github.com/eic/rucio-eic-mcp-server) | querying the data catalogue | 9103 |
+| [`zenodo`](https://github.com/eic/zenodo-mcp-server) | Zenodo records | stdio only |
 
 ## Install
 
@@ -22,15 +22,15 @@ export PATH="$HOME/eic-mcp/bin:$PATH"    # add this to your shell profile
 Inside eic-shell, or from the host — see [From the host](#from-the-host):
 
 ```bash
-eic-mcp up              # start them on http://127.0.0.1:910x/mcp
-eic-mcp status          # which are listening, and whose
-eic-mcp config claude   # write the client config file
-eic-mcp logs uproot     # tail one server's log
-eic-mcp down            # stop them
+eic-mcp config claude   # start the servers, write the client config file
 ```
 
-A port that another user's server holds is refused: `up` and `config` name
-the user.
+On your own machine this starts the servers as local HTTP services and writes
+their URLs. On a shared host — another user has processes there, or holds the
+ports — it writes commands instead: the client spawns the servers over stdio
+as you, and they exit with it. No ports to collide on, nothing other users can
+reach, and every registered server counts, `zenodo` included. Force either
+way with `--http` or `--stdio`.
 
 `config` writes the file the client reads, and never overwrites an existing
 one. Add `-` to print instead: `eic-mcp config claude -`.
@@ -51,15 +51,13 @@ your launcher, so the same file works for a client on the host and for one
 inside. This needs a launcher from eic-shell 2026.10 or later: run
 `./eic-shell --upgrade` once if yours is older.
 
-## Shared machines
-
-On a host where other users could reach the ports, write commands instead of
-URLs: the client spawns the servers over stdio as you, and they exit with it.
-No ports, nothing other users can reach, and every registered server counts,
-`zenodo` included.
+The HTTP servers:
 
 ```bash
-eic-mcp config claude --stdio
+eic-mcp up              # start them on http://127.0.0.1:910x/mcp
+eic-mcp status          # which are listening, and whose
+eic-mcp logs uproot     # tail one server's log
+eic-mcp down            # stop them
 ```
 
 ## Which servers
@@ -67,7 +65,7 @@ eic-mcp config claude --stdio
 Default: `uproot xrootd rucio`.
 
 ```bash
-EIC_MCP_SERVERS="uproot xrootd rucio zenodo" eic-mcp up
+EIC_MCP_SERVERS="uproot xrootd rucio zenodo" eic-mcp config claude
 eic-mcp list    # all registered servers
 ```
 
@@ -77,7 +75,7 @@ Outside eic-shell, `eic-mcp` finds the `eic_xl` image and runs the servers
 inside it. On Linux and WSL the `127.0.0.1` URLs work inside and outside:
 
 ```bash
-eic-mcp up                                            # image located automatically
+eic-mcp config claude                                 # image located automatically
 EIC_MCP_SIF=/path/to/eic_xl-nightly.sif eic-mcp up    # or set one (remembered)
 ```
 
@@ -86,7 +84,7 @@ On macOS, eic-shell is Docker and its ports are published at startup, so run
 
 ```bash
 DOCKER_OPTIONS="$(./eic-shell -- eic-mcp docker-args)" ./eic-shell
-eic-mcp up
+eic-mcp config claude
 ```
 
 ## Other machines
