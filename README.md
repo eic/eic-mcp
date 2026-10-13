@@ -23,11 +23,14 @@ Inside eic-shell, or from the host — see [From the host](#from-the-host):
 
 ```bash
 eic-mcp up              # start them on http://127.0.0.1:910x/mcp
-eic-mcp status          # which are listening
+eic-mcp status          # which are listening, and whose
 eic-mcp config claude   # write the client config file
 eic-mcp logs uproot     # tail one server's log
 eic-mcp down            # stop them
 ```
+
+A port that another user's server holds is refused: `up` and `config` name
+the user.
 
 `config` writes the file the client reads, and never overwrites an existing
 one. Add `-` to print instead: `eic-mcp config claude -`.
