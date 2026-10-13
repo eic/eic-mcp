@@ -58,6 +58,7 @@ EIC_MCP_SIF="${EIC_MCP_SIF:-}"
 RUCIO_CFG="${RUCIO_CFG:-/opt/rucio/etc/rucio.cfg}"
 CONF_DIR="${EIC_MCP_CONF_DIR:-$HOME/.config/eic-mcp/servers.d}"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"   # absolute path, for stdio configs
+AGENTS_SRC="$(dirname "$SELF")/../share/eic-mcp/AGENTS.md"
 # How a client spawns a server over stdio. Inside eic-shell it is the launcher,
 # `./eic-shell -- eic-mcp run NAME`: that works for a client on the host, and
 # inside, where the launcher just runs the command. Elsewhere: this script.
@@ -119,7 +120,7 @@ EOF
 PY
 }
 # BNL disk serves current campaigns (25.12.0+); the JLab store stops at 25.10.x.
-# For older data: XROOTD_SERVER=root://dtn-eic.jlab.org XROOTD_BASE_DIR=/volatile/eic/EPIC
+# For older data: XROOTD_SERVER=root://dtn2304.jlab.org:8443 XROOTD_BASE_DIR=/jlab-osdf-ro/eic/EPIC/volatile
 xrootd_env() { echo "export XROOTD_SERVER='${XROOTD_SERVER:-root://epicxrd1.sdcc.bnl.gov:1095}' XROOTD_BASE_DIR='${XROOTD_BASE_DIR:-/eic/EPIC}'"; }
 zenodo_env() { [ -n "${ZENODO_API_KEY:-}" ] && echo "export ZENODO_API_KEY='$ZENODO_API_KEY'" || echo ":"; }
 
@@ -461,6 +462,17 @@ config_dest() {  # the file each client actually reads
     *) echo "unknown client '$1' (use: opencode | claude | copilot | vscode | cursor | gemini | codex)" >&2; return 2 ;;
   esac
 }
+# The facts an assistant needs about EIC data, next to a project-local config.
+# Claude Code and Gemini read their own file; a one-line pointer imports it.
+write_agents_md() {
+  local client="$1" pointer=""
+  if [ -e AGENTS.md ]; then echo "  • AGENTS.md exists — left unchanged"
+  elif [ -f "$AGENTS_SRC" ]; then cp "$AGENTS_SRC" AGENTS.md; echo "  ✓ wrote $PWD/AGENTS.md — EIC data facts for the assistant"
+  fi
+  case "$client" in claude) pointer=CLAUDE.md;; gemini) pointer=GEMINI.md;; esac
+  [ -n "$pointer" ] && [ ! -e "$pointer" ] && echo "@AGENTS.md" >"$pointer"
+  return 0
+}
 write_client_config() {
   local client="$1" dest; dest="$(config_dest "$client")" || return 2
   case "$dest" in */*) mkdir -p "${dest%/*}";; esac
@@ -476,6 +488,7 @@ write_client_config() {
     print_config "$client" >"$dest"
     case "$dest" in /*) echo "  ✓ wrote $dest";; *) echo "  ✓ wrote $PWD/$dest — launch $client in this directory";; esac
   fi
+  case "$dest" in /*) ;; *) write_agents_md "$client";; esac
 }
 # An HTTP config pointing at another user's servers would silently run every
 # tool as them — refuse it.
