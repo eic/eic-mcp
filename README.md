@@ -46,10 +46,11 @@ one. Add `-` to print instead: `eic-mcp config claude -`.
 | `codex` | `~/.codex/config.toml`, appended |
 
 Project-local files apply to a client started in that directory. Inside
-eic-shell the stdio entries run `./eic-shell -- eic-mcp run <name>` through
-your launcher, so the same file works for a client on the host and for one
-inside. This needs a launcher from eic-shell 2026.10 or later: run
-`./eic-shell --upgrade` once if yours is older.
+eic-shell the stdio entries run `./eic-shell -- <path>/eic-mcp run <name>`
+through your launcher, so the same file works for a client on the host and for
+one inside. This needs a launcher with
+[eic/eic-shell#41](https://github.com/eic/eic-shell/pull/41): run
+`./eic-shell --upgrade` once it is merged.
 
 ## Shared machines
 

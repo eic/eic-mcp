@@ -94,5 +94,5 @@ jobs:
         run: |
           repo="$PWD"; d="$(mktemp -d)"; mkdir -p "$d/eic/local"; touch "$d/eic/eic-shell"; cd "$d"
           EIC_SHELL_PREFIX="$d/eic/local" "$repo/bin/eic-mcp" config claude --stdio
-          jq -e --arg l "$d/eic/eic-shell" '.mcpServers.uproot.command==$l and (.mcpServers.uproot.args==["--","eic-mcp","run","uproot"])' .mcp.json
+          jq -e --arg l "$d/eic/eic-shell" --arg s "$repo/bin/eic-mcp" '.mcpServers.uproot.command==$l and (.mcpServers.uproot.args==["--",$s,"run","uproot"])' .mcp.json
           "$repo/bin/eic-mcp" config opencode --stdio - | jq -e --arg s "$repo/bin/eic-mcp" '.mcp.uproot.command==[$s,"run","uproot"]'

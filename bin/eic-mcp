@@ -54,11 +54,11 @@ RUCIO_CFG="${RUCIO_CFG:-/opt/rucio/etc/rucio.cfg}"
 CONF_DIR="${EIC_MCP_CONF_DIR:-$HOME/.config/eic-mcp/servers.d}"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"   # absolute path, for stdio configs
 # How a client spawns a server over stdio. Inside eic-shell it is the launcher,
-# `./eic-shell -- eic-mcp run NAME`: that works for a client on the host, and
+# `./eic-shell -- <this script> run NAME`: that works for a client on the host, and
 # inside, where the launcher just runs the command. Elsewhere: this script.
 launcher="${EIC_SHELL_PREFIX:+$(dirname "$EIC_SHELL_PREFIX")/eic-shell}"
 if [ -n "$launcher" ] && [ -f "$launcher" ]; then
-  RUN_CMD="$launcher"; RUN_ARGS='"--", "eic-mcp", "run"'
+  RUN_CMD="$launcher"; RUN_ARGS="\"--\", \"$SELF\", \"run\""
 else
   RUN_CMD="$SELF"; RUN_ARGS='"run"'
 fi
