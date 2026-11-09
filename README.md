@@ -45,7 +45,23 @@ one. Add `-` to print instead: `eic-mcp config claude -`.
 | `gemini` | `.gemini/settings.json` |
 | `codex` | `~/.codex/config.toml`, appended |
 
-Project-local files apply to a client started in that directory.
+Project-local files apply to a client started in that directory. Inside
+eic-shell the stdio entries run `./eic-shell -- <path>/eic-mcp run <name>`
+through your launcher, so the same file works for a client on the host and for
+one inside. This needs a launcher with
+[eic/eic-shell#41](https://github.com/eic/eic-shell/pull/41): run
+`./eic-shell --upgrade` once it is merged.
+
+## Shared machines
+
+On a host where other users could reach the ports, write commands instead of
+URLs: the client spawns the servers over stdio as you, and they exit with it.
+No ports, nothing other users can reach, and every registered server counts,
+`zenodo` included.
+
+```bash
+eic-mcp config claude --stdio
+```
 
 ## Which servers
 
@@ -101,8 +117,8 @@ register indico 9105 indico-mcp-server https://github.com/cohm/indico-mcp \
 - `COMMAND` — the server command, on `PATH` inside the image
 - `HTTP_TEMPLATE` — how to run it as an HTTP service: `%c` command, `%h` bind
   host, `%p` port
-- an empty template marks it stdio-only: shown by `list`, skipped by `up`,
-  never written into a client config
+- an empty template marks it stdio-only: shown by `list`, skipped by `up`
+  and by HTTP configs
 - `ENV_HOOK` — optional function echoing `export …` lines for auth or config
 
 To use a locally built server:
